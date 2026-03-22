@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agent-flow": {
+      "command": "node",
+      "args": ["/Users/george/agent-flow/channel-server/dist/index.js"]
+    }
+  }
+}
