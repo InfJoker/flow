@@ -4,6 +4,8 @@ A desktop app that turns agent workflows into visual state machines. Build once,
 
 ![Editor with debug workflow](screenshots/02-editor.png)
 
+**Platforms:** macOS, Linux
+
 ## The Problem
 
 Multi-step agent tasks require constant supervision. Debug an issue? You type "fetch the issue," read the output, type "trace the root cause," evaluate, type "implement a fix," review, type "run tests" — back and forth until done. Agent Flow removes you from the loop. Define the workflow upfront, click Run, review the result.
@@ -13,6 +15,33 @@ Multi-step agent tasks require constant supervision. Debug an issue? You type "f
 You compose workflows as state machines in a visual editor. Each state holds actions — prompts or scripts — that Claude Code executes. Transitions between states carry descriptions that Claude reads to decide where to go next. Loops ("review score below 4 → go back to implement") work as regular transitions.
 
 The app communicates with Claude Code through its channel system: an MCP server bridges the desktop UI and a running Claude session. You see each state light up as it executes, read Claude's output in real time, and watch transition decisions appear.
+
+## Installation
+
+Requires [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/) 18+.
+
+**macOS** also needs Xcode Command Line Tools (`xcode-select --install`).
+
+**Linux** also needs: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
+
+```bash
+# Clone and install
+git clone git@github.com:InfJoker/flow.git && cd flow
+
+# Build the channel server
+cd channel-server && npm install && npm run build && cd ..
+
+# Install the app and run
+cd app && npm install && cargo tauri dev
+```
+
+This opens the Agent Flow desktop window. Subsequent launches are faster — only the first build compiles Rust dependencies.
+
+For a production binary (`.dmg` on macOS, `.deb`/`.AppImage` on Linux):
+
+```bash
+cd app && cargo tauri build
+```
 
 ## Quick Start
 
