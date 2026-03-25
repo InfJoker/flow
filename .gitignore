@@ -14,5 +14,7 @@ channel-server/dist/
 # Prototype (kept as reference but not needed)
 prototype/node_modules/
 
-# Screenshots
-screenshots/
+# Capture script deps
+node_modules/
+package.json
+package-lock.json
