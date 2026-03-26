@@ -1,0 +1,119 @@
+name: Dev Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: macos-x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Build channel server
+        run: cd channel-server && npm ci && npm run build
+
+      - name: Install app deps
+        run: cd app && npm ci
+
+      - name: Build Tauri app
+        run: cd app && npx tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Collect artifacts (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p artifacts
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg artifacts/ 2>/dev/null || true
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz artifacts/ 2>/dev/null || true
+
+      - name: Collect artifacts (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p artifacts
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb artifacts/ 2>/dev/null || true
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage artifacts/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-flow-${{ matrix.label }}
+          path: artifacts/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir release
+          find all-artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.tar.gz" \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Get short hash
+        id: hash
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete previous dev release
+        run: gh release delete dev --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete previous dev tag
+        run: git push origin :refs/tags/dev 2>/dev/null || true
+
+      - name: Create dev release
+        run: |
+          gh release create dev release/* \
+            --title "dev-${{ steps.hash.outputs.short }}" \
+            --notes "Development build from \`${{ steps.hash.outputs.short }}\` on main.
+
+          **Install:**
+          - macOS (Apple Silicon): Download \`.dmg\`, open, drag to Applications
+          - macOS (Intel): Download the x64 \`.dmg\`
+          - Linux: Download \`.AppImage\` (chmod +x, run) or \`.deb\` (dpkg -i)
+
+          Also build the channel server: \`cd channel-server && npm install && npm run build\`" \
+            --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
