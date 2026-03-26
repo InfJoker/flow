@@ -6,7 +6,6 @@ target/
 
 # Tauri build artifacts
 app/src-tauri/target/
-app/src-tauri/icons/
 
 # Channel server build
 channel-server/dist/
