@@ -18,6 +18,23 @@ The app communicates with Claude Code through its channel system: an MCP server 
 
 ## Installation
 
+### Download (recommended)
+
+Grab the latest dev build from [Releases](https://github.com/InfJoker/flow/releases/tag/dev):
+
+- **macOS (Apple Silicon):** download the `aarch64.dmg`, open it, drag Agent Flow to Applications
+- **macOS (Intel):** download the `x64.dmg`
+- **Linux:** download the `.AppImage` (`chmod +x` and run) or `.deb` (`sudo dpkg -i`)
+
+You still need the channel server to connect workflows to Claude Code:
+
+```bash
+git clone https://github.com/InfJoker/flow.git && cd flow
+cd channel-server && npm install && npm run build
+```
+
+### Build from source
+
 Requires [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/) 18+.
 
 **macOS** also needs Xcode Command Line Tools (`xcode-select --install`).
@@ -25,19 +42,16 @@ Requires [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/) 18+.
 **Linux** also needs: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
 
 ```bash
-# Clone and install
-git clone git@github.com:InfJoker/flow.git && cd flow
+git clone https://github.com/InfJoker/flow.git && cd flow
 
 # Build the channel server
 cd channel-server && npm install && npm run build && cd ..
 
-# Install the app and run
+# Run in development mode
 cd app && npm install && npx tauri dev
 ```
 
-This opens the Agent Flow desktop window. Subsequent launches are faster — only the first build compiles Rust dependencies.
-
-For a production binary (`.dmg` on macOS, `.deb`/`.AppImage` on Linux):
+For a production binary:
 
 ```bash
 cd app && npx tauri build

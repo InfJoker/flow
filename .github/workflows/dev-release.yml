@@ -10,12 +10,13 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             label: macos-x64
           - os: ubuntu-22.04
@@ -59,7 +60,6 @@ jobs:
         run: |
           mkdir -p artifacts
           cp app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg artifacts/ 2>/dev/null || true
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz artifacts/ 2>/dev/null || true
 
       - name: Collect artifacts (Linux)
         if: runner.os == 'Linux'
@@ -87,7 +87,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir release
-          find all-artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.tar.gz" \) -exec cp {} release/ \;
+          find all-artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} release/ \;
           ls -la release/
 
       - name: Get short hash
@@ -109,9 +109,9 @@ jobs:
             --notes "Development build from \`${{ steps.hash.outputs.short }}\` on main.
 
           **Install:**
-          - macOS (Apple Silicon): Download \`.dmg\`, open, drag to Applications
+          - macOS (Apple Silicon): Download the arm64 \`.dmg\`, open, drag to Applications
           - macOS (Intel): Download the x64 \`.dmg\`
-          - Linux: Download \`.AppImage\` (chmod +x, run) or \`.deb\` (dpkg -i)
+          - Linux: Download \`.AppImage\` (chmod +x, run) or \`.deb\` (sudo dpkg -i)
 
           Also build the channel server: \`cd channel-server && npm install && npm run build\`" \
             --prerelease
