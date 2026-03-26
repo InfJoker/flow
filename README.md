@@ -32,7 +32,7 @@ git clone git@github.com:InfJoker/flow.git && cd flow
 cd channel-server && npm install && npm run build && cd ..
 
 # Install the app and run
-cd app && npm install && cargo tauri dev
+cd app && npm install && npx tauri dev
 ```
 
 This opens the Agent Flow desktop window. Subsequent launches are faster — only the first build compiles Rust dependencies.
@@ -40,7 +40,7 @@ This opens the Agent Flow desktop window. Subsequent launches are faster — onl
 For a production binary (`.dmg` on macOS, `.deb`/`.AppImage` on Linux):
 
 ```bash
-cd app && cargo tauri build
+cd app && npx tauri build
 ```
 
 ## Quick Start
