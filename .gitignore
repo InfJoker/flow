@@ -15,5 +15,5 @@ prototype/node_modules/
 
 # Capture script deps
 node_modules/
-package.json
-package-lock.json
+/package.json
+/package-lock.json
