@@ -21,8 +21,6 @@ cd app && npm install && npx tauri dev
 cd app/src-tauri && cargo test
 ```
 
-Rust needs `source "$HOME/.cargo/env"` in non-login shells (like the Bash tool).
-
 ## Architecture
 
 The app does NOT talk to Claude Code directly. The channel server sits between them:
