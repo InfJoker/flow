@@ -2,6 +2,7 @@ export interface Action {
   type: "prompt" | "script";
   content: string;
   agent?: string;
+  model?: string;
   shell?: "bash" | "python";
 }
 

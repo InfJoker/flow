@@ -1,7 +1,7 @@
 import { useState } from "react";
 import SkillPicker from "./SkillPicker";
 import AgentPicker from "./AgentPicker";
-import type { WorkflowState, Action, Transition, Skill } from "./types";
+import type { WorkflowState, Action, Transition, Skill, ModelOverride } from "./types";
 import type { AgentOption } from "./hooks/useAgents";
 
 interface StatePanelProps {
@@ -172,12 +172,29 @@ export default function StatePanel({
                 </select>
               )}
               {state.subagent && action.type === "prompt" && (
-                <button
-                  className="panel-btn-agent"
-                  onClick={() => setPickingAgentIndex(i)}
-                >
-                  {action.agent ?? "default agent"}
-                </button>
+                <>
+                  <button
+                    className="panel-btn-agent"
+                    onClick={() => setPickingAgentIndex(i)}
+                  >
+                    {action.agent ?? "default agent"}
+                  </button>
+                  <select
+                    className="panel-select-sm"
+                    value={action.model ?? ""}
+                    onChange={(e) =>
+                      updateAction(i, {
+                        ...action,
+                        model: (e.target.value || undefined) as ModelOverride | undefined,
+                      })
+                    }
+                  >
+                    <option value="">default model</option>
+                    <option value="opus">opus</option>
+                    <option value="sonnet">sonnet</option>
+                    <option value="haiku">haiku</option>
+                  </select>
+                </>
               )}
               <button
                 className="panel-btn-danger"

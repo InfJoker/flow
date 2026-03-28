@@ -16,6 +16,8 @@ pub struct Action {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
 }
 
@@ -194,6 +196,7 @@ mod tests {
                     action_type: "prompt".to_string(),
                     content: "Do something".to_string(),
                     agent: None,
+                    model: None,
                     shell: None,
                 }]),
                 subflow: None,
@@ -227,5 +230,37 @@ mod tests {
         assert_eq!(loaded.states[0].actions.as_ref().unwrap()[0].content, "Do something");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_action_model_field_roundtrip() {
+        let action = Action {
+            action_type: "prompt".to_string(),
+            content: "analyze code".to_string(),
+            agent: Some("Explore".to_string()),
+            model: Some("opus".to_string()),
+            shell: None,
+        };
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains(r#""model":"opus"#));
+
+        let parsed: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, Some("opus".to_string()));
+        assert_eq!(parsed.agent, Some("Explore".to_string()));
+    }
+
+    #[test]
+    fn test_action_model_field_omitted_when_none() {
+        let action = Action {
+            action_type: "prompt".to_string(),
+            content: "do something".to_string(),
+            agent: None,
+            model: None,
+            shell: None,
+        };
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(!json.contains("model"));
     }
 }

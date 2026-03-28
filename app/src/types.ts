@@ -18,10 +18,13 @@ export interface WorkflowState {
   position?: { x: number; y: number };
 }
 
+export type ModelOverride = "sonnet" | "opus" | "haiku";
+
 export interface Action {
   type: "prompt" | "script";
   content: string;
   agent?: string;
+  model?: ModelOverride;
   shell?: "bash" | "python";
 }
 

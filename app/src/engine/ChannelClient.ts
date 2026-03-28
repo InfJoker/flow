@@ -38,7 +38,7 @@ export class ChannelClient {
     sessionId: string;
     stateId: string;
     stateName: string;
-    actions: { type: string; content: string; agent?: string; shell?: string }[];
+    actions: { type: string; content: string; agent?: string; model?: string; shell?: string }[];
     subagent: boolean;
   }): Promise<void> {
     await checkedFetch(`${this.baseUrl}/execute`, {

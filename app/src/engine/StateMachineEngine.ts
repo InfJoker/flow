@@ -138,6 +138,7 @@ export class StateMachineEngine {
               type: a.type,
               content: a.content,
               agent: a.agent,
+              model: a.model,
               shell: a.shell,
             })),
             subagent: wfState.subagent ?? false,

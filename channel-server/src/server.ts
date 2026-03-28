@@ -5,6 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { broadcastSSE } from "./http.js";
 import type {
+  Action,
   ExecuteStatePayload,
   PickTransitionPayload,
 } from "./types.js";
@@ -98,24 +99,32 @@ export function createChannelServer(): Server {
   return server;
 }
 
+function formatActionLine(a: Action, index: number): string {
+  const prefix = a.type === "prompt" ? "Prompt" : `Script (${a.shell ?? "bash"})`;
+  const agent = a.agent ? ` [agent: ${a.agent}]` : "";
+  const model = a.model ? ` [model: ${a.model}]` : "";
+  return `${index + 1}. ${prefix}${agent}${model}: ${a.content}`;
+}
+
+export function formatExecuteContent(payload: ExecuteStatePayload): string {
+  const actionsText = payload.actions
+    .map((a, i) => formatActionLine(a, i))
+    .join("\n");
+
+  return (
+    `Execute workflow state "${payload.stateName}" (id: ${payload.stateId}).\n\n` +
+    `Session ID: ${payload.sessionId}\n\n` +
+    `Actions to perform${payload.subagent ? " (run as subagents)" : ""}:\n${actionsText}\n\n` +
+    `When done, call the report_action_complete tool with session_id="${payload.sessionId}" and state_id="${payload.stateId}".`
+  );
+}
+
 // Send a channel notification to Claude
 export async function sendExecuteState(
   server: Server,
   payload: ExecuteStatePayload
 ): Promise<void> {
-  const actionsText = payload.actions
-    .map((a, i) => {
-      const prefix = a.type === "prompt" ? "Prompt" : `Script (${a.shell ?? "bash"})`;
-      const agent = a.agent ? ` [agent: ${a.agent}]` : "";
-      return `${i + 1}. ${prefix}${agent}: ${a.content}`;
-    })
-    .join("\n");
-
-  const content =
-    `Execute workflow state "${payload.stateName}" (id: ${payload.stateId}).\n\n` +
-    `Session ID: ${payload.sessionId}\n\n` +
-    `Actions to perform${payload.subagent ? " (run as subagents)" : ""}:\n${actionsText}\n\n` +
-    `When done, call the report_action_complete tool with session_id="${payload.sessionId}" and state_id="${payload.stateId}".`;
+  const content = formatExecuteContent(payload);
 
   await server.notification({
     method: "notifications/claude/channel",
