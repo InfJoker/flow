@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { isTauri, invoke } from "@tauri-apps/api/core";
 import type { Skill } from "../types";
 
 const mockSkills: Skill[] = [
@@ -12,7 +12,6 @@ const mockSkills: Skill[] = [
 
 async function invokeSkillScan(): Promise<Skill[]> {
   if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
     return invoke("scan_skills");
   }
   return mockSkills;
