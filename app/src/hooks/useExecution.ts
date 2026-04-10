@@ -55,6 +55,16 @@ export function useExecution() {
         } catch { /* non-critical */ }
       }
 
+      // Reflect the updated workflow name in local state so the sidebar
+      // doesn't keep showing the channel-server default ("Unknown Workflow").
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.sessionId === session.sessionId
+            ? { ...s, workflowId: workflow.id, workflowName: workflow.name }
+            : s
+        )
+      );
+
       setActiveSessionId(session.sessionId);
 
       const engine = new StateMachineEngine(
