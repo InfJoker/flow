@@ -21,7 +21,6 @@ export interface ExecutionState {
 
 type StateChangeCallback = (state: ExecutionState) => void;
 
-const ACTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const TRANSITION_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_STEPS = 500;
 
@@ -142,22 +141,16 @@ export class StateMachineEngine {
               shell: a.shell,
             })),
             subagent: wfState.subagent ?? false,
+            interactive: wfState.interactive ?? false,
           });
         } catch (err) {
           this.setError(`Failed to send state to channel: ${err}`);
           break;
         }
 
-        // Wait for action completion with timeout
-        const actionResult = await this.waitWithTimeout<void>(
-          new Promise<void>((resolve) => { this.resolveAction = resolve; }),
-          ACTION_TIMEOUT_MS,
-          "Action execution timed out"
-        );
-        if (!actionResult.ok) {
-          this.setError(actionResult.error);
-          break;
-        }
+        // Wait for action completion — no timeout, state may be interactive
+        // and take arbitrarily long waiting for the user.
+        await new Promise<void>((resolve) => { this.resolveAction = resolve; });
       }
 
       // Find outgoing transitions

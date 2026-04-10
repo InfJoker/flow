@@ -13,6 +13,13 @@ export interface WorkflowState {
   id: string;
   name: string;
   subagent?: boolean;
+  /**
+   * Marks a state as requiring real user interaction (e.g. a brainstorming
+   * prompt that expects the user to reply). Interactive states must not be
+   * marked complete until the user has actually responded in a subsequent
+   * turn — see channel-server/src/server.ts formatExecuteContent.
+   */
+  interactive?: boolean;
   actions?: Action[];
   subflow?: WorkflowRef;
   position?: { x: number; y: number };

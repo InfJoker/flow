@@ -111,11 +111,21 @@ export function formatExecuteContent(payload: ExecuteStatePayload): string {
     .map((a, i) => formatActionLine(a, i))
     .join("\n");
 
+  const completionInstruction = payload.interactive
+    ? `This state is INTERACTIVE — it requires real input from the user. ` +
+      `Address the user directly in this conversation to perform the action(s) above, ` +
+      `then STOP your current turn and wait. Do NOT call report_action_complete yet. ` +
+      `Only after the user has actually replied with the input this state needs, ` +
+      `call report_action_complete with session_id="${payload.sessionId}" and ` +
+      `state_id="${payload.stateId}", summarizing what the user provided.`
+    : `When done, call the report_action_complete tool with ` +
+      `session_id="${payload.sessionId}" and state_id="${payload.stateId}".`;
+
   return (
     `Execute workflow state "${payload.stateName}" (id: ${payload.stateId}).\n\n` +
     `Session ID: ${payload.sessionId}\n\n` +
     `Actions to perform${payload.subagent ? " (run as subagents)" : ""}:\n${actionsText}\n\n` +
-    `When done, call the report_action_complete tool with session_id="${payload.sessionId}" and state_id="${payload.stateId}".`
+    completionInstruction
   );
 }
 
@@ -154,7 +164,14 @@ export async function sendPickTransition(
     `Available transitions:\n${optionsText}\n\n` +
     `Based on what you just did, pick the most appropriate transition. ` +
     `Call the pick_transition tool with session_id="${payload.sessionId}", ` +
-    `state_id="${payload.stateId}", and the picked target state ID.`;
+    `state_id="${payload.stateId}", and the picked target state ID.\n\n` +
+    `IMPORTANT: Only transition if the current state has genuinely completed. ` +
+    `If the state required user input that has not yet been provided, do NOT ` +
+    `call pick_transition — you should not have reported the action complete in ` +
+    `the first place. Wait for the user and pick a transition only once the ` +
+    `real precondition (e.g. the user's reply) has been satisfied. ` +
+    `"No alternative transition available" is not a valid reason to transition ` +
+    `past missing user input.`;
 
   await server.notification({
     method: "notifications/claude/channel",

@@ -95,4 +95,36 @@ describe("formatExecuteContent", () => {
     expect(content).toContain("1. Prompt [agent: code-review:code-reviewer]: review code");
     expect(content).toContain("2. Prompt [agent: code-review:security-auditor] [model: opus]: check security");
   });
+
+  describe("interactive states", () => {
+    it("emits wait-for-user instructions when interactive is true", () => {
+      const content = formatExecuteContent({ ...basePayload, interactive: true });
+      expect(content).toContain("INTERACTIVE");
+      expect(content).toContain("Do NOT call report_action_complete yet");
+      expect(content).toContain("after the user has actually replied");
+    });
+
+    it("still references the session + state IDs in interactive mode", () => {
+      const content = formatExecuteContent({ ...basePayload, interactive: true });
+      expect(content).toContain('session_id="sess-1"');
+      expect(content).toContain('state_id="s1"');
+    });
+
+    it("omits the standard 'when done' instruction when interactive", () => {
+      const content = formatExecuteContent({ ...basePayload, interactive: true });
+      expect(content).not.toContain("When done, call the report_action_complete tool");
+    });
+
+    it("uses standard completion instruction when interactive is false", () => {
+      const content = formatExecuteContent({ ...basePayload, interactive: false });
+      expect(content).toContain("When done, call the report_action_complete tool");
+      expect(content).not.toContain("INTERACTIVE");
+    });
+
+    it("uses standard completion instruction when interactive is omitted", () => {
+      const content = formatExecuteContent(basePayload);
+      expect(content).toContain("When done, call the report_action_complete tool");
+      expect(content).not.toContain("INTERACTIVE");
+    });
+  });
 });

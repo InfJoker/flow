@@ -39,6 +39,10 @@ export default function StatePanel({
     onUpdate({ ...state, subagent: !state.subagent });
   };
 
+  const toggleInteractive = () => {
+    onUpdate({ ...state, interactive: !state.interactive });
+  };
+
   const addAction = (type: "prompt" | "script") => {
     const newAction: Action = {
       type,
@@ -134,6 +138,17 @@ export default function StatePanel({
             onChange={toggleSubagent}
           />
           <span>Subagents</span>
+        </label>
+        <label
+          className="panel-toggle"
+          title="Waits for real user input before completing — use for brainstorming / Q&A states"
+        >
+          <input
+            type="checkbox"
+            checked={state.interactive ?? false}
+            onChange={toggleInteractive}
+          />
+          <span>Interactive</span>
         </label>
       </div>
 

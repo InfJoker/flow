@@ -40,6 +40,7 @@ export class ChannelClient {
     stateName: string;
     actions: { type: string; content: string; agent?: string; model?: string; shell?: string }[];
     subagent: boolean;
+    interactive?: boolean;
   }): Promise<void> {
     await checkedFetch(`${this.baseUrl}/execute`, {
       method: "POST",

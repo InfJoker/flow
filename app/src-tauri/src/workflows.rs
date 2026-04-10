@@ -28,6 +28,8 @@ pub struct WorkflowState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub interactive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<Vec<Action>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subflow: Option<WorkflowRef>,
@@ -192,6 +194,7 @@ mod tests {
                 id: "s1".to_string(),
                 name: "State 1".to_string(),
                 subagent: None,
+                interactive: None,
                 actions: Some(vec![Action {
                     action_type: "prompt".to_string(),
                     content: "Do something".to_string(),

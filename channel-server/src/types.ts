@@ -12,6 +12,7 @@ export interface ExecuteStatePayload {
   stateName: string;
   actions: Action[];
   subagent: boolean;
+  interactive?: boolean;
 }
 
 export interface PickTransitionPayload {
