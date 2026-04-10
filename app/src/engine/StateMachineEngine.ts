@@ -24,6 +24,11 @@ type StateChangeCallback = (state: ExecutionState) => void;
 const TRANSITION_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_STEPS = 500;
 
+// Action waits have NO time-based timeout. Claude Code sessions can legitimately
+// run for hours — interactive states wait for the user, long scripts/agents wait
+// for completion. We bail out only on a fatal SSE disconnect, which signals the
+// channel is actually dead rather than just slow.
+
 export class StateMachineEngine {
   private workflow: Workflow;
   private client: ChannelClient;
@@ -31,6 +36,7 @@ export class StateMachineEngine {
   private state: ExecutionState;
   private onChange: StateChangeCallback;
   private resolveAction: (() => void) | null = null;
+  private rejectAction: ((err: Error) => void) | null = null;
   private resolveTransition: ((picked: string) => void) | null = null;
   private resumeResolve: (() => void) | null = null;
 
@@ -61,6 +67,7 @@ export class StateMachineEngine {
         this.updateStateExecution(data.stateId, "done", data.results);
         this.resolveAction?.();
         this.resolveAction = null;
+        this.rejectAction = null;
       } else if (event.type === "transition_picked") {
         const data = event.data as { picked: string; reason: string };
         this.addOutput(`[Transition] → ${data.picked}: ${data.reason}`);
@@ -69,6 +76,11 @@ export class StateMachineEngine {
       } else if (event.type === "error") {
         const data = event.data as { message: string };
         this.addOutput(`[Error] ${data.message}`);
+        // Fatal channel drop — abort any in-flight action wait so the
+        // workflow fails fast instead of hanging forever.
+        this.rejectAction?.(new Error(data.message));
+        this.rejectAction = null;
+        this.resolveAction = null;
       }
     });
   }
@@ -148,9 +160,17 @@ export class StateMachineEngine {
           break;
         }
 
-        // Wait for action completion — no timeout, state may be interactive
-        // and take arbitrarily long waiting for the user.
-        await new Promise<void>((resolve) => { this.resolveAction = resolve; });
+        // Wait for action completion. No time-based timeout — see note at
+        // top of file. Only a fatal channel drop (SSE CLOSED) aborts.
+        try {
+          await new Promise<void>((resolve, reject) => {
+            this.resolveAction = resolve;
+            this.rejectAction = reject;
+          });
+        } catch (err) {
+          this.setError(`Channel error while waiting for action: ${(err as Error).message}`);
+          break;
+        }
       }
 
       // Find outgoing transitions
@@ -233,6 +253,8 @@ export class StateMachineEngine {
     this.state.status = "completed";
     this.addOutput("[Stopped by user]");
     this.resolveAction?.();
+    this.resolveAction = null;
+    this.rejectAction = null;
     this.resolveTransition?.("");
     this.resumeResolve?.();
     this.client.disconnect();

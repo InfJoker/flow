@@ -164,14 +164,7 @@ export async function sendPickTransition(
     `Available transitions:\n${optionsText}\n\n` +
     `Based on what you just did, pick the most appropriate transition. ` +
     `Call the pick_transition tool with session_id="${payload.sessionId}", ` +
-    `state_id="${payload.stateId}", and the picked target state ID.\n\n` +
-    `IMPORTANT: Only transition if the current state has genuinely completed. ` +
-    `If the state required user input that has not yet been provided, do NOT ` +
-    `call pick_transition — you should not have reported the action complete in ` +
-    `the first place. Wait for the user and pick a transition only once the ` +
-    `real precondition (e.g. the user's reply) has been satisfied. ` +
-    `"No alternative transition available" is not a valid reason to transition ` +
-    `past missing user input.`;
+    `state_id="${payload.stateId}", and the picked target state ID.`;
 
   await server.notification({
     method: "notifications/claude/channel",

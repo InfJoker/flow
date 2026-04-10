@@ -236,6 +236,53 @@ mod tests {
     }
 
     #[test]
+    fn test_interactive_field_roundtrip_when_set() {
+        let state = WorkflowState {
+            id: "s1".to_string(),
+            name: "Brainstorm".to_string(),
+            subagent: None,
+            interactive: Some(true),
+            actions: None,
+            subflow: None,
+            position: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains(r#""interactive":true"#));
+
+        let parsed: WorkflowState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.interactive, Some(true));
+    }
+
+    #[test]
+    fn test_interactive_field_omitted_when_none() {
+        let state = WorkflowState {
+            id: "s1".to_string(),
+            name: "Regular".to_string(),
+            subagent: None,
+            interactive: None,
+            actions: None,
+            subflow: None,
+            position: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(!json.contains("interactive"));
+
+        let parsed: WorkflowState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.interactive, None);
+    }
+
+    #[test]
+    fn test_interactive_field_accepts_false() {
+        // An older save file may store {"interactive": false}; make sure we
+        // parse it back rather than failing.
+        let json = r#"{"id":"s1","name":"x","interactive":false}"#;
+        let parsed: WorkflowState = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.interactive, Some(false));
+    }
+
+    #[test]
     fn test_action_model_field_roundtrip() {
         let action = Action {
             action_type: "prompt".to_string(),

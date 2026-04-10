@@ -77,6 +77,10 @@ export class ChannelClient {
         }
       };
       this.eventSource.onerror = () => {
+        // EventSource auto-reconnects on transient errors; readyState goes
+        // back to CONNECTING (0). Only treat CLOSED (2) as a fatal drop so
+        // we don't bail out of long-running waits on a brief blip.
+        if (this.eventSource?.readyState !== EventSource.CLOSED) return;
         for (const listener of this.listeners) {
           listener({ type: "error", data: { message: "SSE connection lost" } });
         }
