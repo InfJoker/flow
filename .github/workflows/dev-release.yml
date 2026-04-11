@@ -124,19 +124,41 @@ jobs:
 
       - name: Collect artifacts (macOS)
         if: runner.os == 'macOS'
+        env:
+          LABEL: ${{ matrix.label }}
+          TARGET: ${{ matrix.target }}
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg artifacts/ 2>/dev/null || true
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz artifacts/ 2>/dev/null || true
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig artifacts/ 2>/dev/null || true
+          # DMG — keep Tauri's default name (already unique per arch)
+          cp "app/src-tauri/target/${TARGET}/release/bundle/dmg/"*.dmg artifacts/
+          # Updater bundle — Tauri names it "<ProductName>.app.tar.gz" with no
+          # arch suffix, so arm64 and x64 would collide when flattened in the
+          # release job. Rename to include the matrix label for disambiguation.
+          BUNDLE=$(ls "app/src-tauri/target/${TARGET}/release/bundle/macos/"*.app.tar.gz 2>/dev/null | head -1 || true)
+          if [ -n "$BUNDLE" ]; then
+            cp "$BUNDLE" "artifacts/agent-flow-${LABEL}.app.tar.gz"
+            cp "${BUNDLE}.sig" "artifacts/agent-flow-${LABEL}.app.tar.gz.sig"
+          fi
 
       - name: Collect artifacts (Linux)
         if: runner.os == 'Linux'
+        env:
+          LABEL: ${{ matrix.label }}
+          TARGET: ${{ matrix.target }}
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb artifacts/ 2>/dev/null || true
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage artifacts/ 2>/dev/null || true
-          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig artifacts/ 2>/dev/null || true
+          cp "app/src-tauri/target/${TARGET}/release/bundle/deb/"*.deb artifacts/
+          # AppImage — rename for consistency with the macOS bundle naming so
+          # the manifest generator can match on a stable label-based pattern.
+          APPIMAGE=$(ls "app/src-tauri/target/${TARGET}/release/bundle/appimage/"*.AppImage 2>/dev/null | head -1 || true)
+          if [ -n "$APPIMAGE" ]; then
+            cp "$APPIMAGE" "artifacts/agent-flow-${LABEL}.AppImage"
+            if [ -f "${APPIMAGE}.sig" ]; then
+              cp "${APPIMAGE}.sig" "artifacts/agent-flow-${LABEL}.AppImage.sig"
+            fi
+          fi
 
       - uses: actions/upload-artifact@v6
         with:
@@ -194,10 +216,15 @@ jobs:
           VERSION=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Locate platform-specific updater bundles (best-effort: first match wins).
-          DARWIN_ARM_BUNDLE=$(ls release/ | grep -E '\.app\.tar\.gz$' | grep -Ei 'aarch64|arm64' | head -1 || true)
-          DARWIN_X64_BUNDLE=$(ls release/ | grep -E '\.app\.tar\.gz$' | grep -Ev 'aarch64|arm64' | head -1 || true)
-          LINUX_X64_BUNDLE=$(ls release/ | grep -E '\.AppImage$' | head -1 || true)
+          # Locate platform-specific updater bundles by the stable names
+          # assigned during "Collect artifacts" (label-based to avoid
+          # cross-arch filename collisions on macOS).
+          DARWIN_ARM_BUNDLE="agent-flow-macos-arm64.app.tar.gz"
+          DARWIN_X64_BUNDLE="agent-flow-macos-x64.app.tar.gz"
+          LINUX_X64_BUNDLE="agent-flow-linux-x64.AppImage"
+          [ -f "release/${DARWIN_ARM_BUNDLE}" ] || DARWIN_ARM_BUNDLE=""
+          [ -f "release/${DARWIN_X64_BUNDLE}" ] || DARWIN_X64_BUNDLE=""
+          [ -f "release/${LINUX_X64_BUNDLE}" ] || LINUX_X64_BUNDLE=""
 
           # Fail loud if any expected platform bundle or signature is missing.
           # A silent drop here would produce a valid-looking manifest that
