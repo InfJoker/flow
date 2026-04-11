@@ -21,13 +21,14 @@ export interface ExecutionState {
 
 type StateChangeCallback = (state: ExecutionState) => void;
 
-const TRANSITION_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_STEPS = 500;
 
-// Action waits have NO time-based timeout. Claude Code sessions can legitimately
-// run for hours — interactive states wait for the user, long scripts/agents wait
-// for completion. We bail out only on a fatal SSE disconnect, which signals the
-// channel is actually dead rather than just slow.
+// Neither action waits nor transition waits have a time-based timeout. Claude
+// Code sessions can legitimately run for hours — interactive states wait for
+// the user, long scripts/agents wait for completion, and a transition pick may
+// sit idle while Claude is doing other work in the background. We bail out only
+// on a fatal SSE disconnect, which signals the channel is actually dead rather
+// than just slow.
 
 export class StateMachineEngine {
   private workflow: Workflow;
@@ -38,6 +39,7 @@ export class StateMachineEngine {
   private resolveAction: (() => void) | null = null;
   private rejectAction: ((err: Error) => void) | null = null;
   private resolveTransition: ((picked: string) => void) | null = null;
+  private rejectTransition: ((err: Error) => void) | null = null;
   private resumeResolve: (() => void) | null = null;
 
   constructor(
@@ -73,14 +75,18 @@ export class StateMachineEngine {
         this.addOutput(`[Transition] → ${data.picked}: ${data.reason}`);
         this.resolveTransition?.(data.picked);
         this.resolveTransition = null;
+        this.rejectTransition = null;
       } else if (event.type === "error") {
         const data = event.data as { message: string };
         this.addOutput(`[Error] ${data.message}`);
-        // Fatal channel drop — abort any in-flight action wait so the
-        // workflow fails fast instead of hanging forever.
+        // Fatal channel drop — abort any in-flight wait so the workflow
+        // fails fast instead of hanging forever.
         this.rejectAction?.(new Error(data.message));
         this.rejectAction = null;
         this.resolveAction = null;
+        this.rejectTransition?.(new Error(data.message));
+        this.rejectTransition = null;
+        this.resolveTransition = null;
       }
     });
   }
@@ -203,31 +209,21 @@ export class StateMachineEngine {
         break;
       }
 
-      const transitionResult = await this.waitWithTimeout<string>(
-        new Promise<string>((resolve) => { this.resolveTransition = resolve; }),
-        TRANSITION_TIMEOUT_MS,
-        "Transition decision timed out"
-      );
-      if (!transitionResult.ok) {
-        this.setError(transitionResult.error);
+      // Wait for Claude to pick a transition. Like action waits, no
+      // time-based timeout — only a fatal channel drop aborts.
+      let picked: string;
+      try {
+        picked = await new Promise<string>((resolve, reject) => {
+          this.resolveTransition = resolve;
+          this.rejectTransition = reject;
+        });
+      } catch (err) {
+        this.setError(`Channel error while waiting for transition: ${(err as Error).message}`);
         break;
       }
 
-      currentId = transitionResult.value;
+      currentId = picked;
     }
-  }
-
-  private waitWithTimeout<T>(
-    promise: Promise<T>,
-    ms: number,
-    timeoutMessage: string
-  ): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
-    return Promise.race([
-      promise.then((value) => ({ ok: true as const, value })),
-      new Promise<{ ok: false; error: string }>((resolve) =>
-        setTimeout(() => resolve({ ok: false, error: timeoutMessage }), ms)
-      ),
-    ]);
   }
 
   pause(): void {
@@ -256,6 +252,8 @@ export class StateMachineEngine {
     this.resolveAction = null;
     this.rejectAction = null;
     this.resolveTransition?.("");
+    this.resolveTransition = null;
+    this.rejectTransition = null;
     this.resumeResolve?.();
     this.client.disconnect();
     this.notify();

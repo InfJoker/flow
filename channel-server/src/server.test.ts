@@ -158,7 +158,7 @@ describe("sendPickTransition", () => {
     expect(captured.content).toContain('Go to "s3" — go to s3');
   });
 
-  it("does NOT tell Claude to withhold pick_transition (would deadlock on 2-min transition timeout)", async () => {
+  it("does NOT tell Claude to withhold pick_transition (would deadlock the workflow)", async () => {
     const { server, captured } = mockServer();
     await sendPickTransition(server, {
       sessionId: "sess-1",
@@ -168,8 +168,9 @@ describe("sendPickTransition", () => {
 
     // Regression: the previous implementation had a defensive clause telling
     // Claude "do NOT call pick_transition" if user input was still pending.
-    // That contradicted the engine's TRANSITION_TIMEOUT_MS and would brick
-    // the workflow after 2 minutes. Must not come back.
+    // The engine now waits indefinitely for a transition pick (no time-based
+    // timeout), so withholding the tool would brick the workflow forever.
+    // Must not come back.
     expect(captured.content).not.toContain("do NOT");
     expect(captured.content).not.toMatch(/not.*call.*pick_transition/i);
   });
