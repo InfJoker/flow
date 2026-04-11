@@ -85,8 +85,29 @@ jobs:
           fi
           echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
+      # Check whether the updater signing key secret is available. When it
+      # isn't, we still build the app — we just skip producing updater
+      # artifacts so main is never stuck on a missing secret.
+      - name: Check updater signing availability
+        id: signing
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY not set — updater artifacts will be skipped for this build"
+          fi
+
       - name: Build Tauri app
-        run: cd app && npx tauri build --target ${{ matrix.target }}
+        run: |
+          cd app
+          # Override createUpdaterArtifacts based on whether we have a signing
+          # key. Tauri fails the build if the flag is true and the key is
+          # missing, so we must keep them in sync.
+          CONFIG_JSON='{"bundle":{"createUpdaterArtifacts":${{ steps.signing.outputs.available }}}}'
+          npx tauri build --target ${{ matrix.target }} --config "$CONFIG_JSON"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -147,7 +168,22 @@ jobs:
         id: hash
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+      # Only generate the updater manifest when the signing secret was
+      # available during build — otherwise there are no .sig files to embed.
+      - name: Check updater signing availability
+        id: signing
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping latest.json — no signing key configured"
+          fi
+
       - name: Generate latest.json
+        if: steps.signing.outputs.available == 'true'
         env:
           SHORT: ${{ steps.hash.outputs.short }}
           RUN_NUMBER: ${{ github.run_number }}
