@@ -408,10 +408,15 @@ function AppInner() {
               className="top-btn primary"
               onClick={() => {
                 setView("run");
-                startExecution(workflow);
+                startExecution(workflow, selectedStateId ?? undefined);
               }}
+              title={
+                selectedState
+                  ? `Run starting from "${selectedState.name}"`
+                  : "Run from the beginning"
+              }
             >
-              Run
+              {selectedState ? `Run from "${selectedState.name}"` : "Run"}
             </button>
           )}
           {isTauri && updater.bannerVisible && updater.status.kind === "available" && (

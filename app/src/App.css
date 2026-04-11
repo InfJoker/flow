@@ -399,8 +399,10 @@ body {
 }
 
 .state-node.selected {
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 1px var(--accent-blue);
+  border-color: var(--accent-blue-light);
+  box-shadow:
+    0 0 0 2px var(--accent-blue-light),
+    0 0 24px rgba(88, 166, 255, 0.35);
 }
 
 .state-node.subagent {
@@ -1111,8 +1113,10 @@ body {
 
 /* React Flow overrides */
 .react-flow__node.selected .state-node {
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 1px var(--accent-blue);
+  border-color: var(--accent-blue-light);
+  box-shadow:
+    0 0 0 2px var(--accent-blue-light),
+    0 0 24px rgba(88, 166, 255, 0.35);
 }
 
 .react-flow__edge-path {

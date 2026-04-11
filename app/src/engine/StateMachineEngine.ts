@@ -91,10 +91,16 @@ export class StateMachineEngine {
     });
   }
 
-  async start(): Promise<void> {
-    const incomingTargets = new Set(this.workflow.transitions.map((t) => t.to));
-    const startState = this.workflow.states.find((s) => !incomingTargets.has(s.id))
-      ?? this.workflow.states[0];
+  async start(startStateId?: string): Promise<void> {
+    let startState = startStateId
+      ? this.workflow.states.find((s) => s.id === startStateId)
+      : undefined;
+
+    if (!startState) {
+      const incomingTargets = new Set(this.workflow.transitions.map((t) => t.to));
+      startState = this.workflow.states.find((s) => !incomingTargets.has(s.id))
+        ?? this.workflow.states[0];
+    }
 
     if (!startState) {
       this.setError("No states in workflow");

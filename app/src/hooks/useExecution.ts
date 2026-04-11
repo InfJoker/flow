@@ -81,7 +81,7 @@ export function useExecution() {
   );
 
   const startExecution = useCallback(
-    async (workflow: Workflow) => {
+    async (workflow: Workflow, startStateId?: string) => {
       const found = await refreshSessions();
 
       if (found.length === 0) {
@@ -100,7 +100,7 @@ export function useExecution() {
 
       const session = found[0];
       const engine = await connectToSession(session, workflow);
-      await engine.start();
+      await engine.start(startStateId);
     },
     [refreshSessions, connectToSession]
   );
