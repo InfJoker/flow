@@ -88,7 +88,8 @@ jobs:
       - name: Build Tauri app
         run: cd app && npx tauri build --target ${{ matrix.target }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -105,6 +106,8 @@ jobs:
         run: |
           mkdir -p artifacts
           cp app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg artifacts/ 2>/dev/null || true
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz artifacts/ 2>/dev/null || true
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig artifacts/ 2>/dev/null || true
 
       - name: Collect artifacts (Linux)
         if: runner.os == 'Linux'
@@ -112,6 +115,7 @@ jobs:
           mkdir -p artifacts
           cp app/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb artifacts/ 2>/dev/null || true
           cp app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage artifacts/ 2>/dev/null || true
+          cp app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig artifacts/ 2>/dev/null || true
 
       - uses: actions/upload-artifact@v6
         with:
@@ -132,12 +136,99 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir release
-          find all-artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} release/ \;
+          find all-artifacts -type f \
+            \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \
+               -o -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \
+               -o -name "*.AppImage.sig" \) \
+            -exec cp {} release/ \;
           ls -la release/
 
       - name: Get short hash
         id: hash
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate latest.json
+        env:
+          SHORT: ${{ steps.hash.outputs.short }}
+          RUN_NUMBER: ${{ github.run_number }}
+          BASE: "https://github.com/InfJoker/flow/releases/download/dev"
+        run: |
+          set -euo pipefail
+
+          VERSION=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Locate platform-specific updater bundles (best-effort: first match wins).
+          DARWIN_ARM_BUNDLE=$(ls release/ | grep -E '\.app\.tar\.gz$' | grep -Ei 'aarch64|arm64' | head -1 || true)
+          DARWIN_X64_BUNDLE=$(ls release/ | grep -E '\.app\.tar\.gz$' | grep -Ev 'aarch64|arm64' | head -1 || true)
+          LINUX_X64_BUNDLE=$(ls release/ | grep -E '\.AppImage$' | head -1 || true)
+
+          # Fail loud if any expected platform bundle or signature is missing.
+          # A silent drop here would produce a valid-looking manifest that
+          # silently stops serving updates to one arch.
+          missing=0
+          for pair in "darwin-aarch64:$DARWIN_ARM_BUNDLE" \
+                      "darwin-x86_64:$DARWIN_X64_BUNDLE" \
+                      "linux-x86_64:$LINUX_X64_BUNDLE"; do
+            key="${pair%%:*}"
+            file="${pair#*:}"
+            if [ -z "$file" ]; then
+              echo "::error::missing updater bundle for $key"
+              missing=1
+              continue
+            fi
+            if [ ! -s "release/${file}.sig" ]; then
+              echo "::error::missing or empty signature for $key ($file.sig)"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          DARWIN_ARM_SIG=$(cat "release/${DARWIN_ARM_BUNDLE}.sig")
+          DARWIN_X64_SIG=$(cat "release/${DARWIN_X64_BUNDLE}.sig")
+          LINUX_X64_SIG=$(cat "release/${LINUX_X64_BUNDLE}.sig")
+
+          # Use the monotonic GitHub Actions run number as a numeric pre-release
+          # identifier so semver ordering is strictly monotonic across builds.
+          # Git short hashes compared lexicographically would yield non-monotonic
+          # ordering and break rolling-dev updates on some machines.
+          FULL_VERSION="${VERSION}-dev.${RUN_NUMBER}"
+
+          export FULL_VERSION PUB_DATE SHORT RUN_NUMBER
+          export DARWIN_ARM_BUNDLE DARWIN_X64_BUNDLE LINUX_X64_BUNDLE
+          export DARWIN_ARM_SIG DARWIN_X64_SIG LINUX_X64_SIG
+
+          node - <<'NODE' > release/latest.json
+          const version = process.env.FULL_VERSION;
+          const pubDate = process.env.PUB_DATE;
+          const base = process.env.BASE;
+          const platforms = {};
+          function add(key, file, sig) {
+            if (!file || !sig.trim()) {
+              throw new Error(`missing bundle or signature for ${key}`);
+            }
+            platforms[key] = {
+              signature: sig.trim(),
+              url: `${base}/${file}`,
+            };
+          }
+          add('darwin-aarch64', process.env.DARWIN_ARM_BUNDLE, process.env.DARWIN_ARM_SIG);
+          add('darwin-x86_64', process.env.DARWIN_X64_BUNDLE, process.env.DARWIN_X64_SIG);
+          add('linux-x86_64', process.env.LINUX_X64_BUNDLE, process.env.LINUX_X64_SIG);
+          if (Object.keys(platforms).length === 0) {
+            throw new Error('no platforms resolved — refusing to publish empty manifest');
+          }
+          const manifest = {
+            version,
+            notes: `Dev build ${process.env.RUN_NUMBER} (${process.env.SHORT}) from main`,
+            pub_date: pubDate,
+            platforms,
+          };
+          process.stdout.write(JSON.stringify(manifest, null, 2) + '\n');
+          NODE
+          cat release/latest.json
 
       - name: Delete previous dev release
         run: gh release delete dev --yes 2>/dev/null || true

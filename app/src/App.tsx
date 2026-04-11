@@ -20,12 +20,14 @@ import "./App.css";
 
 import StatePanel from "./StatePanel";
 import RunView from "./RunView";
+import SettingsModal from "./SettingsModal";
 import { debugWorkflow } from "./mockData"; // used as example template
 import { nodeTypes, workflowToNodes, transitionsToEdges } from "./graphUtils";
 import { useSkills } from "./hooks/useSkills";
 import { useAgents } from "./hooks/useAgents";
 import { useWorkflowPersistence } from "./hooks/useWorkflowPersistence";
 import { useExecution } from "./hooks/useExecution";
+import { useUpdater } from "./hooks/useUpdater";
 import type { Workflow, WorkflowState, Transition, StateNodeData } from "./types";
 
 function newStateId(): string {
@@ -54,6 +56,8 @@ function AppInner() {
   const [showLibrary, setShowLibrary] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const updater = useUpdater();
 
   const initialEdges = useMemo(
     () => transitionsToEdges(workflow.transitions),
@@ -410,6 +414,42 @@ function AppInner() {
               Run
             </button>
           )}
+          {isTauri && updater.bannerVisible && updater.status.kind === "available" && (
+            <div className="update-banner">
+              <span>Update {updater.status.update.version} available</span>
+              <button onClick={updater.installUpdate}>Install</button>
+              <button
+                className="update-banner-close"
+                onClick={updater.dismissBanner}
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          {isTauri && (
+            <button
+              className="settings-btn"
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+              aria-label="Settings"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                />
+                <path
+                  d="M13.2 9.5a1 1 0 00.2 1.1l.04.04a1.2 1.2 0 01-1.7 1.7l-.04-.04a1 1 0 00-1.1-.2 1 1 0 00-.6.9v.1a1.2 1.2 0 01-2.4 0v-.06a1 1 0 00-.7-.9 1 1 0 00-1.1.2l-.04.04a1.2 1.2 0 01-1.7-1.7l.04-.04a1 1 0 00.2-1.1 1 1 0 00-.9-.6h-.1a1.2 1.2 0 010-2.4h.06a1 1 0 00.9-.7 1 1 0 00-.2-1.1l-.04-.04a1.2 1.2 0 011.7-1.7l.04.04a1 1 0 001.1.2h.04a1 1 0 00.6-.9v-.1a1.2 1.2 0 012.4 0v.06a1 1 0 00.6.9 1 1 0 001.1-.2l.04-.04a1.2 1.2 0 011.7 1.7l-.04.04a1 1 0 00-.2 1.1v.04a1 1 0 00.9.6h.1a1.2 1.2 0 010 2.4h-.06a1 1 0 00-.9.6z"
+                  stroke="currentColor"
+                  strokeWidth="1.1"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
@@ -507,6 +547,10 @@ function AppInner() {
           />
         )}
       </div>
+
+      {showSettings && (
+        <SettingsModal updater={updater} onClose={() => setShowSettings(false)} />
+      )}
     </div>
   );
 }
