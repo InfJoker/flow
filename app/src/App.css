@@ -1,3 +1,10 @@
+/* Disable React Flow's default animated edge (dashdraw 0.5s linear).
+   Any per-frame SVG animation forces main-thread repaint in WebKit (~18% idle CPU).
+   Loop edges are already visually distinct via dashed yellow stroke. */
+.react-flow__edge.animated path {
+  animation: none;
+}
+
 /* Reset & Base */
 * {
   margin: 0;
