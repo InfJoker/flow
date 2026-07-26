@@ -55,6 +55,34 @@ turn and `resume`s onto it for every later state, so context carries across the
 whole workflow run. Transitions use structured output with an enum constrained to
 the offered target ids, which the channel backend does not validate at all.
 
+`interactive` states are refused by the SDK backend rather than executed: they
+are a human gate, and a headless turn has no user to answer it. Run those
+workflows on the channel backend.
+
+### Channel invariants
+
+These are load-bearing and easy to break by accident — each one caused a real
+hang or a corrupted run before it was fixed.
+
+- **`/execute` and `/transition` must answer before the work finishes.** The
+  engine arms its SSE waiter around the POST, and the channel backend just fires
+  an MCP notification and returns. A backend that `await`s the turn inside the
+  HTTP handler holds the request past the WebView's fetch timeout. Hence
+  `void sdk.execute(payload)` in `index.ts`.
+- **Anything fired without `await` must never reject.** An unhandled rejection
+  kills the server and orphans the session file, so every failure inside
+  `SdkBackend` becomes an `error` SSE event instead.
+- **Events are scoped to a run.** `/register` mints a `runId` and clears the
+  buffer; every event carries it; the engine drops events from other runs and
+  only settles a waiter for the state it is actually awaiting. Without this a
+  finished run's completion settles the next run's state. Registration failure is
+  therefore fatal to a run, not best-effort.
+- **Replay resumes from `Last-Event-ID`, it does not repeat.** Events carry a
+  monotonic SSE `id`, so a first-time client gets the whole buffer (closing the
+  gap between POST and EventSource handshake) while a reconnecting one gets only
+  what it missed. Re-sending history would settle the current iteration of a
+  cyclic workflow with an earlier iteration's result.
+
 ## Key Conventions
 
 - Workflow IDs must be alphanumeric + hyphens + underscores (sanitized in Rust)

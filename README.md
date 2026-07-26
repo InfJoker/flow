@@ -14,7 +14,7 @@ Multi-step agent tasks require constant supervision. Debug an issue? You type "f
 
 You compose workflows as state machines in a visual editor. Each state holds actions — prompts or scripts — that Claude Code executes. Transitions between states carry descriptions that Claude reads to decide where to go next. Loops ("review score below 4 → go back to implement") work as regular transitions.
 
-The app communicates with Claude Code through its channel system: an MCP server bridges the desktop UI and a running Claude session. You see each state light up as it executes, read Claude's output in real time, and watch transition decisions appear.
+A channel server sits between the desktop UI and Claude, and it can drive Claude two ways. By default it bridges to a Claude Code session you launch yourself over MCP. Alternatively it drives Claude directly through the Agent SDK, with no terminal step — see [Execution backends](#execution-backends). Either way you see each state light up as it executes, read Claude's output in real time, and watch transition decisions appear.
 
 ## Installation
 
@@ -25,6 +25,8 @@ Grab the latest dev build from [Releases](https://github.com/InfJoker/flow/relea
 - **macOS (Apple Silicon):** download the `aarch64.dmg`, open it, drag Agent Flow to Applications
 - **macOS (Intel):** download the `x64.dmg`
 - **Linux:** download the `.AppImage` (`chmod +x` and run) or `.deb` (`sudo dpkg -i`)
+
+macOS 12 or later is required.
 
 You still need the channel server to connect workflows to Claude Code:
 
@@ -142,6 +144,42 @@ claude --dangerously-load-development-channels server:agent-flow
 ```
 
 The channel server picks a random port, writes a session file to `~/.agent-flow/sessions/`, and the app discovers it automatically. Multiple sessions run side by side — each gets its own port.
+
+## Execution backends
+
+The channel server can drive Claude two ways. Both serve the same HTTP/SSE
+contract, so the app behaves identically either way.
+
+**`channel` (default)** — what the section above sets up. The server waits for a
+Claude Code session you launched to attach over MCP, and that session reports
+back through tool calls. Use this when you want the workflow to run inside an
+existing session's context, or when a workflow has interactive states.
+
+**`sdk`** — the server drives Claude itself via the Agent SDK. No `.mcp.json`
+entry, no special launch flag, no terminal step. It signs in with your existing
+Claude Code login, so there is no API key to configure.
+
+```bash
+cd channel-server
+AGENT_FLOW_BACKEND=sdk \
+AGENT_FLOW_CWD=/path/to/your/project \
+node dist/index.js
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `AGENT_FLOW_BACKEND` | `channel` (default) or `sdk` |
+| `AGENT_FLOW_CWD` | Directory the workflow's actions run in. Defaults to the server's working directory — set it deliberately, since this is what a run can read and write. |
+| `AGENT_FLOW_MODEL` | Model override, e.g. `sonnet` |
+| `AGENT_FLOW_PERMISSION_MODE` | How much the run may do without asking. Defaults to `acceptEdits`, which allows file edits but blocks shell commands — workflows with `script` actions need a broader mode. Blocked tools are noted in the state's result rather than failing it. |
+
+The Sessions panel shows which backend a session uses and the directory it runs
+in.
+
+Two differences worth knowing. The SDK backend keeps one Claude session for the
+whole run, so context carries from state to state, and it constrains transition
+choices to the offered targets. It cannot run `interactive` states — those need a
+human to answer, so run those workflows on the channel backend.
 
 ## Example: Debug Workflow
 
