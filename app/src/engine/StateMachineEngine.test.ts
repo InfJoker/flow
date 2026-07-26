@@ -187,5 +187,67 @@ describe("StateMachineEngine", () => {
       expect(engine.getState().status).toBe("error");
       expect(engine.getState().error).toContain("SSE connection lost");
     });
+
+    // The SDK backend answers some states without awaiting anything — it refuses
+    // interactive states and reports spawn failures immediately — so the event
+    // can land before executeState's POST resolves. If the waiter is armed only
+    // after that, the event is dropped and the run hangs forever with no output.
+    it("does not miss an error that arrives before executeState resolves", async () => {
+      const workflow = makeWorkflow([{ type: "prompt", content: "x" }], { interactive: true });
+      const listeners = new Set<Listener>();
+      const client = {
+        executeState: vi.fn(async () => {
+          // Emit while the POST is still in flight.
+          for (const fn of listeners) {
+            fn({ type: "error", data: { message: "state is interactive" } });
+          }
+          await new Promise((r) => setTimeout(r, 0));
+        }),
+        pickTransition: vi.fn(),
+        subscribe: vi.fn((cb: Listener) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        }),
+        disconnect: vi.fn(),
+      } as unknown as ChannelClient;
+
+      const engine = new StateMachineEngine(workflow, client, "sess-1", () => {});
+
+      await Promise.race([
+        engine.start(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("engine hung")), 1000)),
+      ]);
+
+      expect(engine.getState().status).toBe("error");
+      expect(engine.getState().error).toContain("state is interactive");
+    });
+
+    it("does not miss a completion that arrives before executeState resolves", async () => {
+      const workflow = makeWorkflow([{ type: "prompt", content: "x" }]);
+      const listeners = new Set<Listener>();
+      const client = {
+        executeState: vi.fn(async (payload: { stateId: string }) => {
+          for (const fn of listeners) {
+            fn({ type: "action_complete", data: { stateId: payload.stateId, results: "fast" } });
+          }
+          await new Promise((r) => setTimeout(r, 0));
+        }),
+        pickTransition: vi.fn(),
+        subscribe: vi.fn((cb: Listener) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        }),
+        disconnect: vi.fn(),
+      } as unknown as ChannelClient;
+
+      const engine = new StateMachineEngine(workflow, client, "sess-1", () => {});
+
+      await Promise.race([
+        engine.start(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("engine hung")), 1000)),
+      ]);
+
+      expect(engine.getState().status).toBe("completed");
+    });
   });
 });

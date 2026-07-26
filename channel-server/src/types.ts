@@ -42,6 +42,14 @@ export interface SessionInfo {
   workflowName: string;
   pid: number;
   startedAt: string;
+  /** Which backend drives Claude for this session. */
+  backend?: "channel" | "sdk";
+  /**
+   * Directory the workflow's actions run in. Under the channel backend this is
+   * wherever the user launched Claude Code; under the SDK backend the server
+   * chooses it. Either way the app needs it to show what a run can touch.
+   */
+  cwd?: string;
 }
 
 // SSE event types sent to the Tauri app

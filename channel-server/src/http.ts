@@ -19,7 +19,14 @@ const sseClients: Set<ServerResponse> = new Set();
 export function broadcastSSE(event: SSEEvent): void {
   const data = JSON.stringify(event);
   for (const client of sseClients) {
-    client.write(`data: ${data}\n\n`);
+    // A socket can die between the TCP close and its "close" event, so writing
+    // here can throw or emit on a destroyed stream. One dead client must not
+    // take down the server or stop the remaining clients being served.
+    try {
+      client.write(`data: ${data}\n\n`);
+    } catch {
+      sseClients.delete(client);
+    }
   }
 }
 
@@ -77,6 +84,9 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
           res.write("data: {\"type\":\"connected\"}\n\n");
           sseClients.add(res);
           req.on("close", () => sseClients.delete(res));
+          // Without a listener, a stream "error" event is an uncaught exception
+          // that would kill the server and orphan the session file.
+          res.on("error", () => sseClients.delete(res));
           return;
         }
 

@@ -11,7 +11,9 @@ let sessionFilePath: string | null = null;
 export function writeSessionFile(
   port: number,
   workflowId: string,
-  workflowName: string
+  workflowName: string,
+  backend: "channel" | "sdk" = "channel",
+  cwd: string = process.cwd()
 ): SessionInfo {
   mkdirSync(SESSIONS_DIR, { recursive: true });
 
@@ -22,6 +24,8 @@ export function writeSessionFile(
     workflowName,
     pid: process.pid,
     startedAt: new Date().toISOString(),
+    backend,
+    cwd,
   };
 
   sessionFilePath = join(SESSIONS_DIR, `${info.sessionId}.json`);
