@@ -163,6 +163,57 @@ describe("execute", () => {
   });
 });
 
+describe("stop", () => {
+  it("aborts the signal handed to the in-flight query", async () => {
+    let seen: AbortSignal | undefined;
+    let release: (() => void) | undefined;
+    queryMock.mockImplementation(({ options }: { options: { abortController?: AbortController } }) => {
+      seen = options.abortController?.signal;
+      return (async function* () {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        yield ok("done");
+      })();
+    });
+    const { emit } = collector();
+    const backend = new SdkBackend(emit, "/tmp");
+
+    const running = backend.execute(executePayload());
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(seen?.aborted).toBe(false);
+    backend.stop();
+    expect(seen?.aborted).toBe(true);
+
+    release?.();
+    await running;
+  });
+
+  // Reporting completion after a stop would walk the engine on to the next state.
+  it("does not report completion for work finished after a stop", async () => {
+    queryMock.mockImplementation(() => turn(init("c1"), ok("done"))());
+    const { events, emit } = collector();
+    const backend = new SdkBackend(emit, "/tmp");
+
+    backend.stop();
+    await backend.execute(executePayload());
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it("is safe to call when nothing is running, and more than once", () => {
+    const { emit } = collector();
+    const backend = new SdkBackend(emit, "/tmp");
+
+    expect(() => {
+      backend.stop();
+      backend.stop();
+    }).not.toThrow();
+  });
+});
+
 describe("transition", () => {
   const transitionPayload = {
     sessionId: "s1",

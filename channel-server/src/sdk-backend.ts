@@ -51,6 +51,11 @@ export class SdkBackend {
   // The engine awaits an SSE event before issuing the next call, but a stray
   // double-POST would otherwise interleave two queries onto one session.
   private chain: Promise<unknown> = Promise.resolve();
+  // Aborting this kills the spawned Claude child. Without it, shutting the
+  // server down mid-turn leaves that child running — still editing files in
+  // `cwd` and spending tokens — after the user believes the run has stopped.
+  private inFlight: AbortController | null = null;
+  private stopped = false;
 
   constructor(
     private readonly emit: Emit,
@@ -64,6 +69,16 @@ export class SdkBackend {
 
   getClaudeSessionId(): string | undefined {
     return this.claudeSessionId;
+  }
+
+  /**
+   * Abort the running turn and refuse further work. Safe to call more than once,
+   * and safe to call when nothing is running.
+   */
+  stop(): void {
+    this.stopped = true;
+    this.inFlight?.abort();
+    this.inFlight = null;
   }
 
   // Callers fire these without awaiting (see the fire-and-ack note in index.ts),
@@ -86,9 +101,21 @@ export class SdkBackend {
     });
   }
 
-  private baseOptions(model?: string) {
+  /** Runs `work` with a fresh abort controller registered for stop(). */
+  private async withAbort(work: (signal: AbortController) => Promise<void>): Promise<void> {
+    const controller = new AbortController();
+    this.inFlight = controller;
+    try {
+      await work(controller);
+    } finally {
+      if (this.inFlight === controller) this.inFlight = null;
+    }
+  }
+
+  private baseOptions(model?: string, abortController?: AbortController) {
     return {
       cwd: this.cwd,
+      ...(abortController ? { abortController } : {}),
       // Load ~/.claude and .claude so workflows can name plugin-scoped agents and
       // skills (e.g. "code-review:code-reviewer") the way the channel backend does.
       settingSources: ["user", "project"] satisfies SettingSource[] as SettingSource[],
@@ -117,15 +144,18 @@ export class SdkBackend {
         return;
       }
 
+      if (this.stopped) return;
+
       // A state's actions may each request a model; the state runs as one turn, so
       // the first explicit model wins rather than silently ignoring all of them.
       const model = payload.actions.find((a) => a.model)?.model;
       let results = "";
 
       try {
+        await this.withAbort(async (controller) => {
         for await (const message of query({
           prompt: formatSdkExecutePrompt(payload),
-          options: this.baseOptions(model),
+          options: this.baseOptions(model, controller),
         })) {
           if (message.type === "system" && message.subtype === "init") {
             this.claudeSessionId = message.session_id;
@@ -148,10 +178,15 @@ export class SdkBackend {
             }
           }
         }
+        });
       } catch (err) {
         this.emit({ type: "error", data: { message: `State "${payload.stateId}": ${String(err)}` } });
         return;
       }
+
+      // A stopped run has no listener that cares, and reporting completion would
+      // walk the engine on to the next state.
+      if (this.stopped) return;
 
       this.emit({
         type: "action_complete",
@@ -165,7 +200,10 @@ export class SdkBackend {
       let picked: string | undefined;
       let reason = "";
 
+      if (this.stopped) return;
+
       try {
+        await this.withAbort(async (controller) => {
         for await (const message of query({
           prompt:
             `You just finished workflow state "${payload.stateId}". ` +
@@ -173,7 +211,7 @@ export class SdkBackend {
             `using the descriptions attached to each option:\n` +
             payload.options.map((o) => `- ${o.to}: ${o.description}`).join("\n"),
           options: {
-            ...this.baseOptions(),
+            ...this.baseOptions(undefined, controller),
             outputFormat: { type: "json_schema" as const, schema: transitionSchema(payload.options) },
           },
         })) {
@@ -189,10 +227,13 @@ export class SdkBackend {
             reason = out?.reason ?? "";
           }
         }
+        });
       } catch (err) {
         this.emit({ type: "error", data: { message: `Transition from "${payload.stateId}": ${String(err)}` } });
         return;
       }
+
+      if (this.stopped) return;
 
       // The schema constrains next_state to the offered targets, but a dropped or
       // malformed structured_output would otherwise send the engine to undefined.

@@ -76,6 +76,10 @@ async function main() {
 
   // Graceful shutdown
   const shutdown = () => {
+    // process.exit does not reap the Claude child the SDK backend spawned, so
+    // without this it keeps running — editing files and spending tokens — after
+    // the user has stopped the run.
+    sdk?.stop();
     cleanupSessionFile();
     process.exit(0);
   };

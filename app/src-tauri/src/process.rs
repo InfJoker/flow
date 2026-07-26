@@ -22,6 +22,13 @@ pub struct SessionInfo {
     /// Directory the workflow's actions run in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Any field this binary does not know about.
+    ///
+    /// `update_session_workflow` rewrites the whole file, so without this an app
+    /// older than the channel server that wrote the file would silently strip the
+    /// fields it does not model. Capturing them keeps rewrites lossless.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[tauri::command]
@@ -191,10 +198,34 @@ mod tests {
             started_at: "2026-05-06T08:24:16.828Z".into(),
             backend: None,
             cwd: None,
+            extra: Default::default(),
         };
 
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("backend"), "got: {json}");
         assert!(!json.contains("cwd"), "got: {json}");
+    }
+
+    /// A newer channel server may write fields this binary does not model.
+    /// Rewriting the file (as update_session_workflow does) must not drop them.
+    #[test]
+    fn test_unknown_fields_survive_a_rewrite() {
+        let json = r#"{
+            "sessionId": "abc",
+            "port": 1,
+            "workflowId": "wf",
+            "workflowName": "WF",
+            "pid": 1,
+            "startedAt": "2026-05-06T08:24:16.828Z",
+            "claudeSessionId": "claude-xyz",
+            "somethingNewer": {"nested": true}
+        }"#;
+
+        let info: SessionInfo = serde_json::from_str(json).unwrap();
+        let rewritten = serde_json::to_string(&info).unwrap();
+
+        assert!(rewritten.contains("somethingNewer"), "got: {rewritten}");
+        assert!(rewritten.contains("nested"), "got: {rewritten}");
+        assert!(rewritten.contains("claude-xyz"), "got: {rewritten}");
     }
 }

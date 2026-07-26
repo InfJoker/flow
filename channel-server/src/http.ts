@@ -16,8 +16,23 @@ interface HttpServerOptions {
 // Connected SSE clients
 const sseClients: Set<ServerResponse> = new Set();
 
+// SSE has no replay, so an event broadcast between the app's POST and its
+// EventSource handshake would be lost outright and the run would wait forever.
+// Events emitted while nobody is listening are held for the next client to
+// attach. Bounded because a server left running with no app must not grow
+// without limit.
+const MAX_PENDING = 50;
+const pending: string[] = [];
+
 export function broadcastSSE(event: SSEEvent): void {
   const data = JSON.stringify(event);
+
+  if (sseClients.size === 0) {
+    pending.push(data);
+    if (pending.length > MAX_PENDING) pending.shift();
+    return;
+  }
+
   for (const client of sseClients) {
     // A socket can die between the TCP close and its "close" event, so writing
     // here can throw or emit on a destroyed stream. One dead client must not
@@ -82,6 +97,11 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
             "Access-Control-Allow-Origin": "*",
           });
           res.write("data: {\"type\":\"connected\"}\n\n");
+          // Deliver anything emitted before this client attached, then clear it
+          // so a second client does not replay events the first already handled.
+          for (const data of pending.splice(0)) {
+            res.write(`data: ${data}\n\n`);
+          }
           sseClients.add(res);
           req.on("close", () => sseClients.delete(res));
           // Without a listener, a stream "error" event is an uncaught exception
