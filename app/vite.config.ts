@@ -19,10 +19,12 @@ export default defineConfig({
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: {
+    // safari15, not the scaffold's safari13: esbuild refuses to down-transpile
+    // destructuring for safari <15, which d3-drag/d3-zoom (via React Flow) use.
     target:
       process.env.TAURI_ENV_PLATFORM == 'windows'
         ? 'chrome105'
-        : 'safari13',
+        : 'safari15',
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },

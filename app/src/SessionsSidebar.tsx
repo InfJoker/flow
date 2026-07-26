@@ -7,6 +7,16 @@ interface SessionsSidebarProps {
   onRefresh: () => void;
 }
 
+/**
+ * Shorten a path for display, keeping the tail — the last couple of segments are
+ * what identify the project, and the sidebar is too narrow for a full path.
+ */
+export function shortenPath(path: string): string {
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length <= 2) return path;
+  return `…/${segments.slice(-2).join("/")}`;
+}
+
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
@@ -31,26 +41,49 @@ export default function SessionsSidebar({
           Refresh
         </button>
       </div>
-      {sessions.map((s) => (
-        <button
-          key={s.sessionId}
-          className={`run-session-item ${s.sessionId === activeSessionId ? "active" : ""}`}
-          onClick={() => onSelect(s)}
-        >
-          <span
-            className={`session-dot ${s.sessionId === activeSessionId ? "running" : "paused"}`}
-          />
-          <div className="session-info">
-            <span className="session-name">{s.workflowName}</span>
-            <span className="session-time">{timeAgo(s.startedAt)}</span>
-          </div>
-        </button>
-      ))}
+      {sessions.map((s) => {
+        const isActive = s.sessionId === activeSessionId;
+        return (
+          <button
+            key={s.sessionId}
+            className={`run-session-item ${isActive ? "active" : ""}`}
+            onClick={() => onSelect(s)}
+            /* aria-current, not aria-pressed: these are one-of-many choices,
+               and "pressed" would imply clicking again deselects. */
+            aria-current={isActive ? "true" : undefined}
+          >
+            {/* The dot is decorative — its meaning is carried by aria-current
+                above and the visible text below, since colour alone is not a
+                usable signal. */}
+            <span
+              className={`session-dot ${isActive ? "running" : "paused"}`}
+              aria-hidden="true"
+            />
+            <div className="session-info">
+              <span className="session-name">{s.workflowName}</span>
+              <span className="session-time">
+                {isActive ? "Selected · " : ""}
+                {timeAgo(s.startedAt)}
+                {s.backend === "sdk" ? " · built-in engine" : ""}
+              </span>
+              {/* What this run can read and write. Worth the row: without it the
+                  user has no way to tell which project a session acts on. */}
+              {s.cwd && (
+                <span className="session-cwd" title={s.cwd}>
+                  {shortenPath(s.cwd)}
+                </span>
+              )}
+            </div>
+          </button>
+        );
+      })}
       {sessions.length === 0 && (
         <div className="sessions-empty">
           <p>No active sessions</p>
           <p className="sessions-hint">
-            Start Claude Code with the channel flag, or click Run in the editor
+            Start Claude Code with:
+            <br />
+            claude --dangerously-load-development-channels server:agent-flow
           </p>
         </div>
       )}

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { SessionInfo, ExecuteStatePayload, PickTransitionPayload, SSEEvent } from "./types.js";
 import { updateSessionFile } from "./session.js";
 
@@ -16,10 +17,56 @@ interface HttpServerOptions {
 // Connected SSE clients
 const sseClients: Set<ServerResponse> = new Set();
 
+// SSE has no replay, so an event broadcast between the app's POST and its
+// EventSource handshake would be lost outright and the run would wait forever.
+// Every event is buffered for the current run and replayed to each client that
+// attaches. Buffering unconditionally — rather than only when the client set is
+// empty — matters: a socket that has died but not yet been reaped still looks
+// connected, and writes into a half-closed stream succeed silently. Bounded so
+// a long-lived server cannot grow without limit.
+//
+// Replaying to every client means a reconnecting client sees events it already
+// handled. That is safe because the app ignores events from other runs and only
+// settles a waiter for the state it is actually waiting on, so duplicates no-op.
+const MAX_PENDING = 200;
+let pending: { seq: number; data: string }[] = [];
+
+// Monotonic across the server's life, never reset. Emitted as the SSE `id:`
+// field, which EventSource echoes back as Last-Event-ID when it auto-reconnects,
+// so a reconnecting client is replayed only what it has not already seen.
+// Without this, replaying the whole buffer re-delivers an event the client
+// already handled — harmless in a linear workflow, but a cyclic one revisiting
+// a state settles the current iteration's waiter with the previous iteration's
+// result while the backend is still working.
+let seq = 0;
+
+// Identifies the current registration. Reset on /register, so events left over
+// from a previous run are never delivered to the next one — a stale
+// action_complete settling the wrong waiter silently desyncs the whole workflow.
+let currentRunId = "";
+
+export function setRunId(runId: string): void {
+  currentRunId = runId;
+  pending = [];
+}
+
 export function broadcastSSE(event: SSEEvent): void {
-  const data = JSON.stringify(event);
+  const data = JSON.stringify({ ...event, runId: currentRunId });
+  const id = ++seq;
+  const frame = `id: ${id}\ndata: ${data}\n\n`;
+
+  pending.push({ seq: id, data });
+  if (pending.length > MAX_PENDING) pending.shift();
+
   for (const client of sseClients) {
-    client.write(`data: ${data}\n\n`);
+    // A socket can die between the TCP close and its "close" event, so writing
+    // here can throw or emit on a destroyed stream. One dead client must not
+    // take down the server or stop the remaining clients being served.
+    try {
+      client.write(frame);
+    } catch {
+      sseClients.delete(client);
+    }
   }
 }
 
@@ -75,8 +122,25 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
             "Access-Control-Allow-Origin": "*",
           });
           res.write("data: {\"type\":\"connected\"}\n\n");
+          // Replay what this client has not already seen. EventSource sends
+          // Last-Event-ID automatically when it auto-reconnects, so a reconnect
+          // mid-run resumes rather than re-delivering events already handled —
+          // re-delivery would settle the current iteration of a cyclic workflow
+          // with a previous iteration's result. A first-time client sends no
+          // header and receives the whole buffer, which is what closes the
+          // connect race.
+          const lastSeen = Number(req.headers["last-event-id"]);
+          const after = Number.isFinite(lastSeen) ? lastSeen : 0;
+          for (const entry of pending) {
+            if (entry.seq > after) {
+              res.write(`id: ${entry.seq}\ndata: ${entry.data}\n\n`);
+            }
+          }
           sseClients.add(res);
           req.on("close", () => sseClients.delete(res));
+          // Without a listener, a stream "error" event is an uncaught exception
+          // that would kill the server and orphan the session file.
+          res.on("error", () => sseClients.delete(res));
           return;
         }
 
@@ -106,8 +170,12 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
           info.workflowId = workflowId;
           info.workflowName = workflowName;
           updateSessionFile(info);
+          // A registration starts a new run: mint an id and drop anything
+          // buffered for the previous one.
+          const runId = randomUUID();
+          setRunId(runId);
           options.onRegister?.(workflowId, workflowName);
-          json(res, 200, { ok: true, sessionId: info.sessionId });
+          json(res, 200, { ok: true, sessionId: info.sessionId, runId });
           return;
         }
 

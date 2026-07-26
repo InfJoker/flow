@@ -33,6 +33,28 @@ Tauri App ←HTTP/SSE→ Channel Server ←MCP stdio→ Claude Code
 - Each session gets a dynamic port, writes a session file to `~/.agent-flow/sessions/`
 - Tauri discovers sessions by scanning that directory
 
+### Execution backends
+
+The channel server has two interchangeable backends behind the same HTTP/SSE
+contract, so the app's `StateMachineEngine` is unaffected by the choice:
+
+| `AGENT_FLOW_BACKEND` | How Claude is driven |
+| --- | --- |
+| `channel` (default) | Waits for a Claude Code session to attach over MCP stdio and call back via the `report_action_complete` / `pick_transition` tools |
+| `sdk` | Drives Claude directly via `@anthropic-ai/claude-agent-sdk` — no manual `claude` launch, and no MCP stdio |
+
+SDK backend env vars:
+
+- `AGENT_FLOW_MODEL` — model override (e.g. `sonnet`)
+- `AGENT_FLOW_CWD` — working directory for the spawned Claude
+- `AGENT_FLOW_PERMISSION_MODE` — SDK `permissionMode`, default `acceptEdits`. Workflows with `script` actions need bash, so a stricter mode makes those states no-op; denials are appended to the state's result rather than failing it.
+
+The SDK backend authenticates with the existing Claude Code login — no
+`ANTHROPIC_API_KEY` required. It captures Claude's own session id from the first
+turn and `resume`s onto it for every later state, so context carries across the
+whole workflow run. Transitions use structured output with an enum constrained to
+the offered target ids, which the channel backend does not validate at all.
+
 ## Key Conventions
 
 - Workflow IDs must be alphanumeric + hyphens + underscores (sanitized in Rust)

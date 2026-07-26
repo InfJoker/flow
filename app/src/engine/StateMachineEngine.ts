@@ -40,6 +40,10 @@ export class StateMachineEngine {
   private rejectAction: ((err: Error) => void) | null = null;
   private resolveTransition: ((picked: string) => void) | null = null;
   private rejectTransition: ((err: Error) => void) | null = null;
+  // Which state's completion / transition this engine will accept right now.
+  // Null between states, so a stray event settles nothing.
+  private awaitingStateId: string | null = null;
+  private awaitingTransitionFrom: string | null = null;
   private resumeResolve: (() => void) | null = null;
 
   constructor(
@@ -63,15 +67,46 @@ export class StateMachineEngine {
     };
 
     this.client.subscribe((event) => {
+      // The channel server outlives a single run and replays buffered events to
+      // every client that attaches, so an event from an earlier run can arrive
+      // here. Settling a waiter with one would mark the wrong state done and
+      // desync every state after it.
+      if (event.runId && this.client.runId && event.runId !== this.client.runId) {
+        return;
+      }
+
       if (event.type === "action_complete") {
         const data = event.data as { stateId: string; results: string };
+        // Only the state currently being awaited may settle this waiter; a
+        // duplicate or late event for any other state is a no-op. On the channel
+        // backend state_id comes from Claude's tool call and is not validated
+        // server-side, so a wrong one would otherwise hang the run with no
+        // explanation — say so rather than dropping it silently.
+        if (data.stateId !== this.awaitingStateId) {
+          if (this.awaitingStateId) {
+            this.addOutput(
+              `[Ignored] completion for "${data.stateId}" while waiting on "${this.awaitingStateId}"`
+            );
+            this.notify();
+          }
+          return;
+        }
         this.addOutput(`[${data.stateId}] Done: ${data.results}`);
         this.updateStateExecution(data.stateId, "done", data.results);
         this.resolveAction?.();
         this.resolveAction = null;
         this.rejectAction = null;
       } else if (event.type === "transition_picked") {
-        const data = event.data as { picked: string; reason: string };
+        const data = event.data as { picked: string; reason: string; stateId?: string };
+        if (data.stateId && data.stateId !== this.awaitingTransitionFrom) {
+          if (this.awaitingTransitionFrom) {
+            this.addOutput(
+              `[Ignored] transition from "${data.stateId}" while waiting on "${this.awaitingTransitionFrom}"`
+            );
+            this.notify();
+          }
+          return;
+        }
         this.addOutput(`[Transition] → ${data.picked}: ${data.reason}`);
         this.resolveTransition?.(data.picked);
         this.resolveTransition = null;
@@ -87,6 +122,9 @@ export class StateMachineEngine {
         this.rejectTransition?.(new Error(data.message));
         this.rejectTransition = null;
         this.resolveTransition = null;
+        // addOutput only mutates state; without this the error text sits
+        // invisible until some later change happens to trigger a render.
+        this.notify();
       }
     });
   }
@@ -152,6 +190,21 @@ export class StateMachineEngine {
       // Execute actions with timeout
       const actions = wfState.actions ?? [];
       if (actions.length > 0) {
+        // Arm the waiter BEFORE sending. A backend can answer faster than the
+        // POST round-trip — the SDK backend refuses interactive states and
+        // reports spawn failures without awaiting anything — and an event that
+        // arrives while resolveAction is still null is dropped, leaving this
+        // loop awaiting a promise nothing can ever settle.
+        this.awaitingStateId = wfState.id;
+        const completion = new Promise<void>((resolve, reject) => {
+          this.resolveAction = resolve;
+          this.rejectAction = reject;
+        });
+        // Because the waiter is armed before the POST, a fast failure can reject
+        // this promise while nothing is awaiting it yet. Mark it handled here;
+        // the rejection is still delivered to the `await completion` below.
+        completion.catch(() => {});
+
         try {
           await this.client.executeState({
             sessionId: this.sessionId,
@@ -168,6 +221,11 @@ export class StateMachineEngine {
             interactive: wfState.interactive ?? false,
           });
         } catch (err) {
+          // Nothing will settle the waiter now; drop it so it cannot capture a
+          // later state's completion event.
+          this.resolveAction = null;
+          this.rejectAction = null;
+          this.awaitingStateId = null;
           this.setError(`Failed to send state to channel: ${err}`);
           break;
         }
@@ -175,13 +233,12 @@ export class StateMachineEngine {
         // Wait for action completion. No time-based timeout — see note at
         // top of file. Only a fatal channel drop (SSE CLOSED) aborts.
         try {
-          await new Promise<void>((resolve, reject) => {
-            this.resolveAction = resolve;
-            this.rejectAction = reject;
-          });
+          await completion;
         } catch (err) {
           this.setError(`Channel error while waiting for action: ${(err as Error).message}`);
           break;
+        } finally {
+          this.awaitingStateId = null;
         }
       }
 
@@ -200,6 +257,14 @@ export class StateMachineEngine {
         continue;
       }
 
+      // Armed before sending, for the same reason as the action waiter above.
+      this.awaitingTransitionFrom = currentId!;
+      const chosen = new Promise<string>((resolve, reject) => {
+        this.resolveTransition = resolve;
+        this.rejectTransition = reject;
+      });
+      chosen.catch(() => {});
+
       // Ask Claude to pick a transition
       try {
         await this.client.pickTransition({
@@ -211,6 +276,9 @@ export class StateMachineEngine {
           })),
         });
       } catch (err) {
+        this.resolveTransition = null;
+        this.rejectTransition = null;
+        this.awaitingTransitionFrom = null;
         this.setError(`Failed to send transition request: ${err}`);
         break;
       }
@@ -219,13 +287,12 @@ export class StateMachineEngine {
       // time-based timeout — only a fatal channel drop aborts.
       let picked: string;
       try {
-        picked = await new Promise<string>((resolve, reject) => {
-          this.resolveTransition = resolve;
-          this.rejectTransition = reject;
-        });
+        picked = await chosen;
       } catch (err) {
         this.setError(`Channel error while waiting for transition: ${(err as Error).message}`);
         break;
+      } finally {
+        this.awaitingTransitionFrom = null;
       }
 
       currentId = picked;

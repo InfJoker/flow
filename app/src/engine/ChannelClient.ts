@@ -1,6 +1,8 @@
 export interface SSEEvent {
   type: string;
   data: Record<string, unknown>;
+  /** The run this event belongs to; see ChannelClient.runId. */
+  runId?: string;
 }
 
 async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
@@ -20,13 +22,29 @@ export class ChannelClient {
     this.baseUrl = `http://127.0.0.1:${port}`;
   }
 
-  async register(workflowId: string, workflowName: string): Promise<{ sessionId: string }> {
+  /**
+   * The run this client registered. The channel server outlives any single run,
+   * so events are stamped with the run that produced them and anything from an
+   * earlier run must be ignored — a stale action_complete would otherwise settle
+   * the current run's waiter and desync the workflow.
+   *
+   * Undefined against a channel server too old to send one, in which case no
+   * filtering happens and behaviour matches the previous version.
+   */
+  runId: string | undefined;
+
+  async register(
+    workflowId: string,
+    workflowName: string
+  ): Promise<{ sessionId: string; runId?: string }> {
     const res = await checkedFetch(`${this.baseUrl}/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workflowId, workflowName }),
     });
-    return res.json();
+    const body = await res.json();
+    this.runId = body.runId;
+    return body;
   }
 
   async getStatus(): Promise<Record<string, unknown>> {
