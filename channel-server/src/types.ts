@@ -52,9 +52,15 @@ export interface SessionInfo {
   cwd?: string;
 }
 
-// SSE event types sent to the Tauri app
+// SSE event types sent to the Tauri app.
+//
+// `runId` identifies the registration the event belongs to. The server outlives
+// any single workflow run, so without it a late event from a finished run —
+// replayed or delivered live — can settle the next run's waiter and desync the
+// whole workflow. Assigned by the server on /register; clients ignore events
+// stamped with any other run.
 export type SSEEvent =
-  | { type: "action_complete"; data: ActionCompleteResult }
-  | { type: "transition_picked"; data: TransitionReply }
-  | { type: "status"; data: { state: string; message: string } }
-  | { type: "error"; data: { message: string } };
+  | { type: "action_complete"; data: ActionCompleteResult; runId?: string }
+  | { type: "transition_picked"; data: TransitionReply; runId?: string }
+  | { type: "status"; data: { state: string; message: string }; runId?: string }
+  | { type: "error"; data: { message: string }; runId?: string };

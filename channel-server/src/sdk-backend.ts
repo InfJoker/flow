@@ -180,6 +180,10 @@ export class SdkBackend {
         }
         });
       } catch (err) {
+        // A stop aborts the turn on purpose; reporting that as a channel error
+        // would surface a phantom failure and, since events are buffered, poison
+        // the next run.
+        if (this.stopped) return;
         this.emit({ type: "error", data: { message: `State "${payload.stateId}": ${String(err)}` } });
         return;
       }
@@ -229,6 +233,7 @@ export class SdkBackend {
         }
         });
       } catch (err) {
+        if (this.stopped) return;
         this.emit({ type: "error", data: { message: `Transition from "${payload.stateId}": ${String(err)}` } });
         return;
       }

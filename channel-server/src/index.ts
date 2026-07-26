@@ -76,9 +76,12 @@ async function main() {
 
   // Graceful shutdown
   const shutdown = () => {
-    // process.exit does not reap the Claude child the SDK backend spawned, so
-    // without this it keeps running — editing files and spending tokens — after
-    // the user has stopped the run.
+    // The SDK installs its own process-exit hook that SIGTERMs spawned children,
+    // so this is not what reaps Claude. It is here to abort the turn promptly and
+    // to mark the backend stopped, so nothing queued behind it starts and no
+    // phantom completion is reported during teardown. A child that ignores
+    // SIGTERM still outlives us — the SDK's SIGKILL escalation is on an unref'd
+    // timer that process.exit preempts.
     sdk?.stop();
     cleanupSessionFile();
     process.exit(0);

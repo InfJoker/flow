@@ -40,6 +40,10 @@ export class StateMachineEngine {
   private rejectAction: ((err: Error) => void) | null = null;
   private resolveTransition: ((picked: string) => void) | null = null;
   private rejectTransition: ((err: Error) => void) | null = null;
+  // Which state's completion / transition this engine will accept right now.
+  // Null between states, so a stray event settles nothing.
+  private awaitingStateId: string | null = null;
+  private awaitingTransitionFrom: string | null = null;
   private resumeResolve: (() => void) | null = null;
 
   constructor(
@@ -63,15 +67,27 @@ export class StateMachineEngine {
     };
 
     this.client.subscribe((event) => {
+      // The channel server outlives a single run and replays buffered events to
+      // every client that attaches, so an event from an earlier run can arrive
+      // here. Settling a waiter with one would mark the wrong state done and
+      // desync every state after it.
+      if (event.runId && this.client.runId && event.runId !== this.client.runId) {
+        return;
+      }
+
       if (event.type === "action_complete") {
         const data = event.data as { stateId: string; results: string };
+        // Only the state currently being awaited may settle this waiter; a
+        // duplicate or late event for any other state is a no-op.
+        if (data.stateId !== this.awaitingStateId) return;
         this.addOutput(`[${data.stateId}] Done: ${data.results}`);
         this.updateStateExecution(data.stateId, "done", data.results);
         this.resolveAction?.();
         this.resolveAction = null;
         this.rejectAction = null;
       } else if (event.type === "transition_picked") {
-        const data = event.data as { picked: string; reason: string };
+        const data = event.data as { picked: string; reason: string; stateId?: string };
+        if (data.stateId && data.stateId !== this.awaitingTransitionFrom) return;
         this.addOutput(`[Transition] → ${data.picked}: ${data.reason}`);
         this.resolveTransition?.(data.picked);
         this.resolveTransition = null;
@@ -160,6 +176,7 @@ export class StateMachineEngine {
         // reports spawn failures without awaiting anything — and an event that
         // arrives while resolveAction is still null is dropped, leaving this
         // loop awaiting a promise nothing can ever settle.
+        this.awaitingStateId = wfState.id;
         const completion = new Promise<void>((resolve, reject) => {
           this.resolveAction = resolve;
           this.rejectAction = reject;
@@ -189,6 +206,7 @@ export class StateMachineEngine {
           // later state's completion event.
           this.resolveAction = null;
           this.rejectAction = null;
+          this.awaitingStateId = null;
           this.setError(`Failed to send state to channel: ${err}`);
           break;
         }
@@ -200,6 +218,8 @@ export class StateMachineEngine {
         } catch (err) {
           this.setError(`Channel error while waiting for action: ${(err as Error).message}`);
           break;
+        } finally {
+          this.awaitingStateId = null;
         }
       }
 
@@ -219,6 +239,7 @@ export class StateMachineEngine {
       }
 
       // Armed before sending, for the same reason as the action waiter above.
+      this.awaitingTransitionFrom = currentId!;
       const chosen = new Promise<string>((resolve, reject) => {
         this.resolveTransition = resolve;
         this.rejectTransition = reject;
@@ -238,6 +259,7 @@ export class StateMachineEngine {
       } catch (err) {
         this.resolveTransition = null;
         this.rejectTransition = null;
+        this.awaitingTransitionFrom = null;
         this.setError(`Failed to send transition request: ${err}`);
         break;
       }
@@ -250,6 +272,8 @@ export class StateMachineEngine {
       } catch (err) {
         this.setError(`Channel error while waiting for transition: ${(err as Error).message}`);
         break;
+      } finally {
+        this.awaitingTransitionFrom = null;
       }
 
       currentId = picked;

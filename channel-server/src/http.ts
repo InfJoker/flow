@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { SessionInfo, ExecuteStatePayload, PickTransitionPayload, SSEEvent } from "./types.js";
 import { updateSessionFile } from "./session.js";
 
@@ -18,20 +19,33 @@ const sseClients: Set<ServerResponse> = new Set();
 
 // SSE has no replay, so an event broadcast between the app's POST and its
 // EventSource handshake would be lost outright and the run would wait forever.
-// Events emitted while nobody is listening are held for the next client to
-// attach. Bounded because a server left running with no app must not grow
-// without limit.
-const MAX_PENDING = 50;
-const pending: string[] = [];
+// Every event is buffered for the current run and replayed to each client that
+// attaches. Buffering unconditionally — rather than only when the client set is
+// empty — matters: a socket that has died but not yet been reaped still looks
+// connected, and writes into a half-closed stream succeed silently. Bounded so
+// a long-lived server cannot grow without limit.
+//
+// Replaying to every client means a reconnecting client sees events it already
+// handled. That is safe because the app ignores events from other runs and only
+// settles a waiter for the state it is actually waiting on, so duplicates no-op.
+const MAX_PENDING = 200;
+let pending: string[] = [];
+
+// Identifies the current registration. Reset on /register, so events left over
+// from a previous run are never delivered to the next one — a stale
+// action_complete settling the wrong waiter silently desyncs the whole workflow.
+let currentRunId = "";
+
+export function setRunId(runId: string): void {
+  currentRunId = runId;
+  pending = [];
+}
 
 export function broadcastSSE(event: SSEEvent): void {
-  const data = JSON.stringify(event);
+  const data = JSON.stringify({ ...event, runId: currentRunId });
 
-  if (sseClients.size === 0) {
-    pending.push(data);
-    if (pending.length > MAX_PENDING) pending.shift();
-    return;
-  }
+  pending.push(data);
+  if (pending.length > MAX_PENDING) pending.shift();
 
   for (const client of sseClients) {
     // A socket can die between the TCP close and its "close" event, so writing
@@ -97,9 +111,10 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
             "Access-Control-Allow-Origin": "*",
           });
           res.write("data: {\"type\":\"connected\"}\n\n");
-          // Deliver anything emitted before this client attached, then clear it
-          // so a second client does not replay events the first already handled.
-          for (const data of pending.splice(0)) {
+          // Deliver everything emitted so far in this run, including events sent
+          // before this client attached. Kept (not spliced) so a reconnecting or
+          // second client sees the same history.
+          for (const data of pending) {
             res.write(`data: ${data}\n\n`);
           }
           sseClients.add(res);
@@ -136,8 +151,12 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
           info.workflowId = workflowId;
           info.workflowName = workflowName;
           updateSessionFile(info);
+          // A registration starts a new run: mint an id and drop anything
+          // buffered for the previous one.
+          const runId = randomUUID();
+          setRunId(runId);
           options.onRegister?.(workflowId, workflowName);
-          json(res, 200, { ok: true, sessionId: info.sessionId });
+          json(res, 200, { ok: true, sessionId: info.sessionId, runId });
           return;
         }
 

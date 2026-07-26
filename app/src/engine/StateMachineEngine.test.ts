@@ -222,6 +222,85 @@ describe("StateMachineEngine", () => {
       expect(engine.getState().error).toContain("state is interactive");
     });
 
+    // The channel server outlives a run and replays buffered events to every
+    // client that attaches, so a finished run's completion can land in the next
+    // run's stream. Settling on it marks the wrong state done and desyncs
+    // everything after it.
+    it("ignores an event stamped with a different run", async () => {
+      const workflow = makeWorkflow([{ type: "prompt", content: "x" }]);
+      const listeners = new Set<Listener>();
+      const client = {
+        runId: "run-2",
+        executeState: vi.fn(async (payload: { stateId: string }) => {
+          // A leftover completion from the previous run, then the real one.
+          for (const fn of listeners) {
+            fn({
+              type: "action_complete",
+              data: { stateId: payload.stateId, results: "STALE" },
+              runId: "run-1",
+            } as never);
+          }
+          for (const fn of listeners) {
+            fn({
+              type: "action_complete",
+              data: { stateId: payload.stateId, results: "fresh" },
+              runId: "run-2",
+            } as never);
+          }
+        }),
+        pickTransition: vi.fn(),
+        subscribe: vi.fn((cb: Listener) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        }),
+        disconnect: vi.fn(),
+      } as unknown as ChannelClient;
+
+      const engine = new StateMachineEngine(workflow, client, "sess-1", () => {});
+      await Promise.race([
+        engine.start(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("engine hung")), 1000)),
+      ]);
+
+      expect(engine.getState().status).toBe("completed");
+      const entry = engine.getState().history.find((h) => h.stateId === "s1");
+      expect(entry?.results).toBe("fresh");
+    });
+
+    // A completion for a state this engine is not waiting on must not settle the
+    // current wait — that is how a duplicate or late event skips a state.
+    it("ignores a completion for a different state", async () => {
+      const workflow = makeWorkflow([{ type: "prompt", content: "x" }]);
+      const listeners = new Set<Listener>();
+      const client = {
+        executeState: vi.fn(async () => {
+          for (const fn of listeners) {
+            fn({ type: "action_complete", data: { stateId: "some-other-state", results: "nope" } });
+          }
+          setTimeout(() => {
+            for (const fn of listeners) {
+              fn({ type: "action_complete", data: { stateId: "s1", results: "real" } });
+            }
+          }, 5);
+        }),
+        pickTransition: vi.fn(),
+        subscribe: vi.fn((cb: Listener) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        }),
+        disconnect: vi.fn(),
+      } as unknown as ChannelClient;
+
+      const engine = new StateMachineEngine(workflow, client, "sess-1", () => {});
+      await Promise.race([
+        engine.start(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("engine hung")), 1000)),
+      ]);
+
+      const entry = engine.getState().history.find((h) => h.stateId === "s1");
+      expect(entry?.results).toBe("real");
+    });
+
     it("does not miss a completion that arrives before executeState resolves", async () => {
       const workflow = makeWorkflow([{ type: "prompt", content: "x" }]);
       const listeners = new Set<Listener>();
