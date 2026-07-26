@@ -78,8 +78,19 @@ export class StateMachineEngine {
       if (event.type === "action_complete") {
         const data = event.data as { stateId: string; results: string };
         // Only the state currently being awaited may settle this waiter; a
-        // duplicate or late event for any other state is a no-op.
-        if (data.stateId !== this.awaitingStateId) return;
+        // duplicate or late event for any other state is a no-op. On the channel
+        // backend state_id comes from Claude's tool call and is not validated
+        // server-side, so a wrong one would otherwise hang the run with no
+        // explanation — say so rather than dropping it silently.
+        if (data.stateId !== this.awaitingStateId) {
+          if (this.awaitingStateId) {
+            this.addOutput(
+              `[Ignored] completion for "${data.stateId}" while waiting on "${this.awaitingStateId}"`
+            );
+            this.notify();
+          }
+          return;
+        }
         this.addOutput(`[${data.stateId}] Done: ${data.results}`);
         this.updateStateExecution(data.stateId, "done", data.results);
         this.resolveAction?.();
@@ -87,7 +98,15 @@ export class StateMachineEngine {
         this.rejectAction = null;
       } else if (event.type === "transition_picked") {
         const data = event.data as { picked: string; reason: string; stateId?: string };
-        if (data.stateId && data.stateId !== this.awaitingTransitionFrom) return;
+        if (data.stateId && data.stateId !== this.awaitingTransitionFrom) {
+          if (this.awaitingTransitionFrom) {
+            this.addOutput(
+              `[Ignored] transition from "${data.stateId}" while waiting on "${this.awaitingTransitionFrom}"`
+            );
+            this.notify();
+          }
+          return;
+        }
         this.addOutput(`[Transition] → ${data.picked}: ${data.reason}`);
         this.resolveTransition?.(data.picked);
         this.resolveTransition = null;

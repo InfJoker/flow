@@ -41,10 +41,11 @@ export function useExecution() {
       const client = new ChannelClient(session.port);
       clientRef.current = client;
 
-      // Register workflow info with channel server + update session file
-      try {
-        await client.register(workflow.id, workflow.name);
-      } catch { /* non-critical */ }
+      // Registering is what scopes the run: it mints the run id the engine uses
+      // to reject events left over from a previous run, and clears the server's
+      // buffer of them. A run started without it would accept those stale events
+      // and settle the wrong state, so this can no longer be swallowed.
+      await client.register(workflow.id, workflow.name);
       if (isTauri()) {
         try {
           await invoke("update_session_workflow", {
@@ -101,7 +102,23 @@ export function useExecution() {
       const session = pickSession(found, activeSessionId);
       if (!session) return;
 
-      const engine = await connectToSession(session, workflow);
+      let engine;
+      try {
+        engine = await connectToSession(session, workflow);
+      } catch (err) {
+        setExecutionState((s) => ({
+          ...s,
+          status: "error",
+          error: "Could not register with the channel server.",
+          output: [
+            ...s.output,
+            `[Error] Could not register with the channel server: ${err}`,
+            "The session may have exited. Refresh sessions and try again.",
+          ],
+        }));
+        return;
+      }
+
       await engine.start(startStateId);
     },
     [refreshSessions, connectToSession, activeSessionId]

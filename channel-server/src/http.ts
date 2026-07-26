@@ -29,7 +29,16 @@ const sseClients: Set<ServerResponse> = new Set();
 // handled. That is safe because the app ignores events from other runs and only
 // settles a waiter for the state it is actually waiting on, so duplicates no-op.
 const MAX_PENDING = 200;
-let pending: string[] = [];
+let pending: { seq: number; data: string }[] = [];
+
+// Monotonic across the server's life, never reset. Emitted as the SSE `id:`
+// field, which EventSource echoes back as Last-Event-ID when it auto-reconnects,
+// so a reconnecting client is replayed only what it has not already seen.
+// Without this, replaying the whole buffer re-delivers an event the client
+// already handled — harmless in a linear workflow, but a cyclic one revisiting
+// a state settles the current iteration's waiter with the previous iteration's
+// result while the backend is still working.
+let seq = 0;
 
 // Identifies the current registration. Reset on /register, so events left over
 // from a previous run are never delivered to the next one — a stale
@@ -43,8 +52,10 @@ export function setRunId(runId: string): void {
 
 export function broadcastSSE(event: SSEEvent): void {
   const data = JSON.stringify({ ...event, runId: currentRunId });
+  const id = ++seq;
+  const frame = `id: ${id}\ndata: ${data}\n\n`;
 
-  pending.push(data);
+  pending.push({ seq: id, data });
   if (pending.length > MAX_PENDING) pending.shift();
 
   for (const client of sseClients) {
@@ -52,7 +63,7 @@ export function broadcastSSE(event: SSEEvent): void {
     // here can throw or emit on a destroyed stream. One dead client must not
     // take down the server or stop the remaining clients being served.
     try {
-      client.write(`data: ${data}\n\n`);
+      client.write(frame);
     } catch {
       sseClients.delete(client);
     }
@@ -111,11 +122,19 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
             "Access-Control-Allow-Origin": "*",
           });
           res.write("data: {\"type\":\"connected\"}\n\n");
-          // Deliver everything emitted so far in this run, including events sent
-          // before this client attached. Kept (not spliced) so a reconnecting or
-          // second client sees the same history.
-          for (const data of pending) {
-            res.write(`data: ${data}\n\n`);
+          // Replay what this client has not already seen. EventSource sends
+          // Last-Event-ID automatically when it auto-reconnects, so a reconnect
+          // mid-run resumes rather than re-delivering events already handled —
+          // re-delivery would settle the current iteration of a cyclic workflow
+          // with a previous iteration's result. A first-time client sends no
+          // header and receives the whole buffer, which is what closes the
+          // connect race.
+          const lastSeen = Number(req.headers["last-event-id"]);
+          const after = Number.isFinite(lastSeen) ? lastSeen : 0;
+          for (const entry of pending) {
+            if (entry.seq > after) {
+              res.write(`id: ${entry.seq}\ndata: ${entry.data}\n\n`);
+            }
           }
           sseClients.add(res);
           req.on("close", () => sseClients.delete(res));
