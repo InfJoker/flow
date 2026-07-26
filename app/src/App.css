@@ -894,6 +894,15 @@ body {
   background: var(--bg-tertiary);
 }
 
+/* Hover was the only affordance, leaving keyboard users with no visible target.
+   Matches the focus treatment already used by .panel-input. */
+.run-session-item:focus-visible,
+.panel-btn-sm:focus-visible,
+.top-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
 .run-session-item.active {
   background: var(--bg-tertiary);
   color: var(--text-primary);
@@ -924,6 +933,10 @@ body {
   flex-direction: column;
   gap: 1px;
   overflow: hidden;
+  /* Without this a flex child refuses to shrink below its content width, so the
+     path row would push the row wider instead of ellipsising. */
+  min-width: 0;
+  align-items: flex-start;
 }
 
 .session-name {
@@ -933,9 +946,24 @@ body {
   text-overflow: ellipsis;
 }
 
+/* --text-muted on --bg-secondary is roughly 2.4:1, below WCAG AA even for large
+   text, so metadata that carries meaning uses --text-secondary (~5.9:1). */
 .session-time {
-  font-size: 10px;
-  color: var(--text-muted);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* shortenPath already truncates from the left, so this stays plain LTR. An
+   rtl/text-align trick would reorder the leading "…/" (both characters are
+   bidi-neutral) and stack a second ellipsis on top of the literal one. */
+.session-cwd {
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .sessions-header {
@@ -956,13 +984,18 @@ body {
 
 .sessions-empty p {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
+/* The hint is the only recovery instruction shown when nothing is running, so it
+   needs to be readable: 10px and --text-muted made it neither. */
 .sessions-hint {
-  font-size: 10px !important;
-  color: var(--text-muted);
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  word-break: break-all;
+  line-height: 1.5;
 }
 
 .output-line.error {

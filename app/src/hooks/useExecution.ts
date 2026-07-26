@@ -3,7 +3,7 @@ import type { Workflow } from "../types";
 import { ChannelClient } from "../engine/ChannelClient";
 import { StateMachineEngine, type ExecutionState } from "../engine/StateMachineEngine";
 import { isTauri, invoke } from "@tauri-apps/api/core";
-import { discoverSessions, killSession, type SessionInfo } from "../engine/SessionManager";
+import { discoverSessions, killSession, pickSession, type SessionInfo } from "../engine/SessionManager";
 
 export function useExecution() {
   const [executionState, setExecutionState] = useState<ExecutionState>({
@@ -92,17 +92,19 @@ export function useExecution() {
           output: [
             ...s.output,
             "[Error] No session found.",
-            "Run: claude --channels server:/path/to/channel-server/dist/index.js",
+            "Run: claude --dangerously-load-development-channels server:agent-flow",
           ],
         }));
         return;
       }
 
-      const session = found[0];
+      const session = pickSession(found, activeSessionId);
+      if (!session) return;
+
       const engine = await connectToSession(session, workflow);
       await engine.start(startStateId);
     },
-    [refreshSessions, connectToSession]
+    [refreshSessions, connectToSession, activeSessionId]
   );
 
   const pause = useCallback(() => engineRef.current?.pause(), []);
