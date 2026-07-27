@@ -11,10 +11,56 @@ export interface StateExecution {
   completedAt?: string;
 }
 
+/** One thing the agent did, as it happened. */
+export interface ActivityEntry {
+  /** Local monotonic id — a stable React key, since events carry no id of their own. */
+  seq: number;
+  kind: "assistant_text" | "tool_use" | "tool_result" | "note";
+  text?: string;
+  tool?: string;
+  detail?: string;
+  ok?: boolean;
+}
+
+/**
+ * One visit to a state, or one chat exchange.
+ *
+ * Append-only, and this is the point. A research loop re-enters the same state
+ * repeatedly — "score below 4, go back and revise" — and the previous model
+ * (one record per state, updated in place) destroyed every earlier visit's
+ * result. Attempts are what make "what did it do in each state" answerable
+ * after the fact rather than only while it is happening.
+ */
+export interface Attempt {
+  attemptId: string;
+  kind: "state" | "chat";
+  /** Null for chat, which belongs to the run rather than to any one state. */
+  stateId: string | null;
+  /** Display label: the state's name, or "You" for a chat message. */
+  label: string;
+  /** 1-based ordinal among this state's visits. Always 1 for chat. */
+  index: number;
+  status: "running" | "done" | "error";
+  startedAt: string;
+  completedAt?: string;
+  activity: ActivityEntry[];
+  /** The state's summary, or the agent's reply to a chat message. */
+  result?: string;
+  error?: string;
+  /** The message the user sent, on a chat attempt. */
+  prompt?: string;
+  /** Why the run went where it went next. The answer to "why did it loop". */
+  transition?: { picked: string; reason: string };
+}
+
 export interface ExecutionState {
   status: ExecutionStatus;
   currentStateId: string | null;
+  /** Per-state view, derived from the most recent attempt at each state. */
   history: StateExecution[];
+  /** Every visit, in order. */
+  attempts: Attempt[];
+  /** Milestone lines only — activity lives on attempts, not here. */
   output: string[];
   error?: string;
 }
@@ -44,7 +90,16 @@ export class StateMachineEngine {
   // Null between states, so a stray event settles nothing.
   private awaitingStateId: string | null = null;
   private awaitingTransitionFrom: string | null = null;
+  // The attempt currently collecting activity.
+  private currentAttemptId: string | null = null;
   private resumeResolve: (() => void) | null = null;
+  // Set by stop(). The loop checks it rather than being unblocked into
+  // continuing: resolving the waiter instead would let the current iteration run
+  // on and POST a transition, starting a fresh Claude turn *after* the user
+  // pressed Stop.
+  private stopped = false;
+  private activitySeq = 0;
+  private notifyQueued = false;
 
   constructor(
     workflow: Workflow,
@@ -63,6 +118,7 @@ export class StateMachineEngine {
         stateId: s.id,
         status: "pending" as const,
       })),
+      attempts: [],
       output: [],
     };
 
@@ -75,8 +131,10 @@ export class StateMachineEngine {
         return;
       }
 
-      if (event.type === "action_complete") {
-        const data = event.data as { stateId: string; results: string };
+      if (event.type === "activity") {
+        this.recordActivity(event.data as Record<string, unknown>);
+      } else if (event.type === "action_complete") {
+        const data = event.data as { stateId: string; results: string; attemptId?: string };
         // Only the state currently being awaited may settle this waiter; a
         // duplicate or late event for any other state is a no-op. On the channel
         // backend state_id comes from Claude's tool call and is not validated
@@ -92,6 +150,7 @@ export class StateMachineEngine {
           return;
         }
         this.addOutput(`[${data.stateId}] Done: ${data.results}`);
+        this.closeAttempt(data.attemptId ?? this.currentAttemptId, "done", data.results);
         this.updateStateExecution(data.stateId, "done", data.results);
         this.resolveAction?.();
         this.resolveAction = null;
@@ -108,12 +167,34 @@ export class StateMachineEngine {
           return;
         }
         this.addOutput(`[Transition] → ${data.picked}: ${data.reason}`);
+        // Record it against the attempt it followed, so re-reading a visit shows
+        // why the run went where it did next.
+        this.attachTransition(data.stateId ?? this.awaitingTransitionFrom, {
+          picked: data.picked,
+          reason: data.reason,
+        });
         this.resolveTransition?.(data.picked);
         this.resolveTransition = null;
         this.rejectTransition = null;
+      } else if (event.type === "chat_complete") {
+        const data = event.data as { attemptId: string; result: string; error?: string };
+        // Chat never settles a run waiter — that is the whole point of it having
+        // its own completion event rather than reusing `error`.
+        this.closeAttempt(
+          data.attemptId,
+          data.error ? "error" : "done",
+          data.result,
+          data.error
+        );
+        this.notify();
+      } else if (event.type === "session_meta") {
+        // Carries the Claude session id once the first turn reveals it; the hook
+        // above the engine surfaces it. Nothing here settles.
+        this.notify();
       } else if (event.type === "error") {
         const data = event.data as { message: string };
         this.addOutput(`[Error] ${data.message}`);
+        this.closeAttempt(this.currentAttemptId, "error", undefined, data.message);
         // Fatal channel drop — abort any in-flight wait so the workflow
         // fails fast instead of hanging forever.
         this.rejectAction?.(new Error(data.message));
@@ -128,6 +209,120 @@ export class StateMachineEngine {
       }
     });
   }
+
+  // ---- attempts -----------------------------------------------------------
+
+  private openAttempt(attempt: Omit<Attempt, "activity" | "startedAt" | "status" | "index">): Attempt {
+    const index =
+      attempt.stateId === null
+        ? 1
+        : this.state.attempts.filter((a) => a.stateId === attempt.stateId).length + 1;
+
+    const created: Attempt = {
+      ...attempt,
+      index,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      activity: [],
+    };
+    this.state.attempts = [...this.state.attempts, created];
+    return created;
+  }
+
+  private closeAttempt(
+    attemptId: string | null | undefined,
+    status: Attempt["status"],
+    result?: string,
+    error?: string
+  ): void {
+    if (!attemptId) return;
+    this.state.attempts = this.state.attempts.map((a) =>
+      a.attemptId === attemptId && a.status === "running"
+        ? { ...a, status, result: result ?? a.result, error, completedAt: new Date().toISOString() }
+        : a
+    );
+  }
+
+  private attachTransition(stateId: string | null, transition: { picked: string; reason: string }): void {
+    if (!stateId) return;
+    // The most recent attempt at that state is the one the transition followed.
+    for (let i = this.state.attempts.length - 1; i >= 0; i--) {
+      if (this.state.attempts[i].stateId === stateId) {
+        const updated = [...this.state.attempts];
+        updated[i] = { ...updated[i], transition };
+        this.state.attempts = updated;
+        return;
+      }
+    }
+  }
+
+  private recordActivity(data: Record<string, unknown>): void {
+    const attemptId = (data.attemptId as string) || this.currentAttemptId;
+    if (!attemptId) return;
+
+    const entry: ActivityEntry = {
+      seq: ++this.activitySeq,
+      kind: (data.kind as ActivityEntry["kind"]) ?? "note",
+      ...(typeof data.text === "string" ? { text: data.text } : {}),
+      ...(typeof data.tool === "string" ? { tool: data.tool } : {}),
+      ...(typeof data.detail === "string" ? { detail: data.detail } : {}),
+      ...(typeof data.ok === "boolean" ? { ok: data.ok } : {}),
+    };
+
+    const index = this.state.attempts.findIndex((a) => a.attemptId === attemptId);
+    if (index === -1) return;
+
+    const updated = [...this.state.attempts];
+    updated[index] = { ...updated[index], activity: [...updated[index].activity, entry] };
+    this.state.attempts = updated;
+    // Coalesced: a busy tool loop emits activity far faster than the UI needs to
+    // repaint, and this state object is replaced wholesale on every notify.
+    this.scheduleNotify();
+  }
+
+  // ---- chat ---------------------------------------------------------------
+
+  /**
+   * Send a message into the run's Claude session.
+   *
+   * The reply is not awaited here: it arrives as activity and a `chat_complete`
+   * event, exactly like a state's work does. A message sent while a state is
+   * running is answered *after* that state's turn, because the server serializes
+   * turns onto one session — it is queued, never interleaved.
+   */
+  async sendChat(text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const attemptId = newAttemptId();
+    this.openAttempt({
+      attemptId,
+      kind: "chat",
+      stateId: null,
+      label: "You",
+      prompt: trimmed,
+    });
+    this.notify();
+
+    try {
+      await this.client.sendChat({ sessionId: this.sessionId, attemptId, text: trimmed });
+    } catch (err) {
+      this.closeAttempt(attemptId, "error", undefined, String(err));
+      this.notify();
+    }
+  }
+
+  /** End the current turn without ending the run. */
+  async interrupt(): Promise<void> {
+    try {
+      await this.client.interrupt();
+    } catch (err) {
+      this.addOutput(`[Error] Could not interrupt: ${err}`);
+      this.notify();
+    }
+  }
+
+  // ---- run loop -----------------------------------------------------------
 
   async start(startStateId?: string): Promise<void> {
     let startState = startStateId
@@ -151,19 +346,23 @@ export class StateMachineEngine {
     await this.runLoop(startState.id);
   }
 
+  /** Blocks while paused. Returns false when the run should stop entirely. */
+  private async awaitResume(): Promise<boolean> {
+    if (this.state.status !== "paused") return true;
+    await new Promise<void>((resolve) => {
+      this.resumeResolve = resolve;
+    });
+    return !this.stopped && this.state.status === "running";
+  }
+
   // Iterative execution loop — no recursion, no stack overflow on cycles
   private async runLoop(startStateId: string): Promise<void> {
     let currentId: string | null = startStateId;
     let steps = 0;
 
     while (currentId) {
-      // Check pause
-      if (this.state.status === "paused") {
-        await new Promise<void>((resolve) => {
-          this.resumeResolve = resolve;
-        });
-        if (this.state.status !== "running") break;
-      }
+      if (this.stopped) break;
+      if (!(await this.awaitResume())) break;
 
       if (this.state.status === "error" || this.state.status === "completed") break;
 
@@ -185,11 +384,25 @@ export class StateMachineEngine {
       this.state.currentStateId = currentId;
       this.updateStateExecution(currentId, "running");
       this.addOutput(`\n--- State: ${wfState.name} ---`);
-      this.notify();
 
       // Execute actions with timeout
       const actions = wfState.actions ?? [];
       if (actions.length > 0) {
+        // Minted here, before the POST, and sent with it. The server stamps every
+        // event it produces with this id, which is what keeps attempt N's tool
+        // calls out of attempt N-1's transcript when a loop revisits a state.
+        // It has to be minted client-side: fire-and-ack routinely delivers events
+        // before the POST resolves, so only a value we already hold can file them.
+        const attemptId = newAttemptId();
+        this.openAttempt({
+          attemptId,
+          kind: "state",
+          stateId: wfState.id,
+          label: wfState.name,
+        });
+        this.currentAttemptId = attemptId;
+        this.notify();
+
         // Arm the waiter BEFORE sending. A backend can answer faster than the
         // POST round-trip — the SDK backend refuses interactive states and
         // reports spawn failures without awaiting anything — and an event that
@@ -210,6 +423,7 @@ export class StateMachineEngine {
             sessionId: this.sessionId,
             stateId: wfState.id,
             stateName: wfState.name,
+            attemptId,
             actions: actions.map((a) => ({
               type: a.type,
               content: a.content,
@@ -226,6 +440,7 @@ export class StateMachineEngine {
           this.resolveAction = null;
           this.rejectAction = null;
           this.awaitingStateId = null;
+          this.closeAttempt(attemptId, "error", undefined, String(err));
           this.setError(`Failed to send state to channel: ${err}`);
           break;
         }
@@ -239,8 +454,15 @@ export class StateMachineEngine {
           break;
         } finally {
           this.awaitingStateId = null;
+          this.currentAttemptId = null;
         }
       }
+
+      // Honour Stop and Pause *here*, before requesting a transition. Checking
+      // only at the top of the loop would fire one more Claude turn — the
+      // transition pick — after the user asked the run to stop or hold.
+      if (this.stopped) break;
+      if (!(await this.awaitResume())) break;
 
       // Find outgoing transitions
       const outgoing = this.workflow.transitions.filter((t) => t.from === currentId);
@@ -319,15 +541,22 @@ export class StateMachineEngine {
   }
 
   stop(): void {
+    this.stopped = true;
     this.state.status = "completed";
     this.addOutput("[Stopped by user]");
-    this.resolveAction?.();
+    // Reject rather than resolve. Resolving would let the current iteration run
+    // on past `await completion` and POST a transition — a fresh Claude turn
+    // started after the user pressed Stop.
+    this.rejectAction?.(new Error("Stopped by user"));
     this.resolveAction = null;
     this.rejectAction = null;
-    this.resolveTransition?.("");
+    this.rejectTransition?.(new Error("Stopped by user"));
     this.resolveTransition = null;
     this.rejectTransition = null;
+    this.closeAttempt(this.currentAttemptId, "error", undefined, "Stopped by user");
+    this.currentAttemptId = null;
     this.resumeResolve?.();
+    this.resumeResolve = null;
     this.client.disconnect();
     this.notify();
   }
@@ -365,4 +594,28 @@ export class StateMachineEngine {
   private notify() {
     this.onChange({ ...this.state });
   }
+
+  /**
+   * Repaint at most once per frame.
+   *
+   * Activity can arrive tens of times a second during a busy tool loop, and
+   * `notify` replaces the whole state object — which re-renders the ReactFlow
+   * canvas alongside the transcript. This app has already had to fix an 18% idle
+   * CPU regression, so activity is deliberately not allowed to drive the render
+   * loop directly. Control events still notify synchronously.
+   */
+  private scheduleNotify() {
+    if (this.notifyQueued) return;
+    this.notifyQueued = true;
+    const flush = () => {
+      this.notifyQueued = false;
+      this.notify();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
+    else setTimeout(flush, 16);
+  }
+}
+
+function newAttemptId(): string {
+  return crypto.randomUUID();
 }

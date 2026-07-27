@@ -79,6 +79,30 @@ export class ChannelClient {
     });
   }
 
+  /**
+   * Deliver a user message into the session's Claude.
+   *
+   * Fire-and-ack like the others: this resolves when the server has accepted the
+   * message, not when Claude has replied. The reply arrives as activity and a
+   * `chat_complete` event.
+   */
+  async sendChat(payload: {
+    sessionId: string;
+    attemptId: string;
+    text: string;
+  }): Promise<void> {
+    await checkedFetch(`${this.baseUrl}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /** End the current turn while leaving the session usable. */
+  async interrupt(): Promise<void> {
+    await checkedFetch(`${this.baseUrl}/interrupt`, { method: "POST" });
+  }
+
   subscribe(callback: (event: SSEEvent) => void): () => void {
     this.listeners.add(callback);
 
