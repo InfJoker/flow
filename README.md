@@ -12,9 +12,11 @@ Multi-step agent tasks require constant supervision. Debug an issue? You type "f
 
 ## How It Works
 
-You compose workflows as state machines in a visual editor. Each state holds actions — prompts or scripts — that Claude Code executes. Transitions between states carry descriptions that Claude reads to decide where to go next. Loops ("review score below 4 → go back to implement") work as regular transitions.
+You open a folder as a project, compose a workflow as a state machine, and press Run. Each state holds actions — prompts or scripts — that Claude executes in that folder. Transitions between states carry descriptions that Claude reads to decide where to go next. Loops ("review score below 4 → go back to implement") work as regular transitions.
 
-A channel server sits between the desktop UI and Claude, and it can drive Claude two ways. By default it bridges to a Claude Code session you launch yourself over MCP. Alternatively it drives Claude directly through the Agent SDK, with no terminal step — see [Execution backends](#execution-backends). Either way you see each state light up as it executes, read Claude's output in real time, and watch transition decisions appear.
+While it runs you watch a transcript of what the agent is actually doing: each tool call as it happens, what the state concluded, and which transition it chose and why. Every visit to a state is kept, so a research loop that revisits "Judge quality" five times leaves five readable passes rather than overwriting itself. You can message the agent mid-run to steer it.
+
+A channel server sits between the desktop UI and Claude, and it can drive Claude two ways. By default Agent Flow starts one for you — no terminal step. Alternatively it bridges to a Claude Code session you launch yourself over MCP; see [Execution backends](#execution-backends).
 
 ## Installation
 
@@ -62,11 +64,13 @@ cd app && npx tauri build
 ## Quick Start
 
 1. Open Agent Flow
-2. Click **+ State** to add states, or load the built-in debug workflow template
-3. Draw transitions by dragging between state handles
-4. Click a state to edit its actions, set transition descriptions
-5. Start Claude Code with the channel: `claude --dangerously-load-development-channels server:agent-flow`
-6. Click **Run** in the app
+2. Click the folder chip in the top bar and **open a project folder** — this is the directory the run reads and writes
+3. Click **+ State** to add states, or load the built-in debug workflow template
+4. Draw transitions by dragging between state handles
+5. Click a state to edit its actions, set transition descriptions
+6. Click **Run**
+
+Agent Flow starts its own Claude session in that folder. You do not need a terminal, and there is no API key to configure — it signs in with your existing Claude Code login. (Node 18+ must be installed, and the channel server built once: `cd channel-server && npm install && npm run build`.)
 
 ## Building Workflows
 
@@ -104,17 +108,49 @@ The canvas fills the screen. Click a state to open the side panel with its name,
 
 Workflows auto-save to `~/.agent-flow/workflows/`. Node positions persist, so your layout stays where you left it.
 
+## Projects
+
+The folder chip in the top bar names the directory a run works in. It is shown permanently rather than tucked into settings because a run's Claude edits files and executes shell commands there — under the default `acceptEdits` permission mode — so it should never be a guess. Recently opened folders are remembered, and the last one reopens on launch.
+
+Sessions are scoped to the open project: Agent Flow will not attach a run to a session whose working directory is a different folder.
+
 ## Running Workflows
 
 Switch to the **Run** tab. Three panels:
 
-- **Sessions** (left) — lists active Claude Code sessions connected through the channel
-- **Live Flow** (center) — the same canvas, read-only, with states colored by status: faded grey for done, blue glow for active, dashed outline for pending
-- **Live Output** (right) — streams Claude's output and shows each transition decision
+- **Sessions** (left) — sessions running in this project, plus the folder's Claude Code history
+- **Live Flow** (center) — the same canvas, read-only, with states colored by status. A `×3` badge appears on a state a loop has been round more than once. Click a state to narrow the transcript to that state
+- **Activity** (right) — the run transcript, and the message box
 
-Controls: **Pause** holds after the current state finishes. **Stop** kills the session.
+Controls: **Pause** holds the run after the current state, before it picks a transition. **Interrupt step** stops the current step now and carries on with whatever it had done. **Stop** ends the run and the session.
+
+### Reading the transcript
+
+Every visit to a state is its own collapsible card, showing that visit's tool calls, the agent's notes, the result it reported, and the transition it chose with its reasoning. Repeats are stacked chronologically, so the fourth pass of a research loop sits below the third and both can be open at once for comparison.
+
+### Talking to the agent
+
+The box at the foot of the panel sends a message into the run's Claude session. The workflow's states and your messages share one conversation, so the agent answers with everything it has done in context, and what you say carries into the states that follow.
+
+Sending while a step is running queues the message — the server runs one turn at a time — so it is answered once that step finishes. To be heard sooner, press **Interrupt step** first.
 
 ![Run view with live tracking](screenshots/05-run-view.png)
+
+## Picking a run up in Claude Code
+
+A workflow run is not a separate kind of thing from a Claude Code session — it *is* one. When Agent Flow drives Claude, that session is written to `~/.claude/projects/` exactly as a terminal session would be, so you can reopen it and carry on by hand.
+
+In the **Sessions** panel, each session has a **Copy resume command** button. It gives you:
+
+```bash
+cd '/path/to/your/project' && claude --resume <session-id>
+```
+
+Run that in a terminal and you are inside the same conversation, with everything the workflow did — every state, and any messages you sent from the app — still in context. Useful when a run gets most of the way there and you want to finish the last bit interactively.
+
+The same panel lists the folder's existing Claude Code sessions, each with its own resume command, so a project's Agent Flow runs and its hand-driven sessions sit in one list.
+
+Two caveats. The session id only exists once Claude's first turn has started, so a session that has not run anything yet has no command to copy. And this applies to runs Agent Flow drives itself — on the channel backend you are already in the terminal.
 
 ## Channel Setup
 
@@ -148,16 +184,25 @@ The channel server picks a random port, writes a session file to `~/.agent-flow/
 ## Execution backends
 
 The channel server can drive Claude two ways. Both serve the same HTTP/SSE
-contract, so the app behaves identically either way.
+contract, so the workflow engine behaves identically either way — but they differ
+in what they can report and accept:
 
-**`channel` (default)** — what the section above sets up. The server waits for a
-Claude Code session you launched to attach over MCP, and that session reports
-back through tool calls. Use this when you want the workflow to run inside an
-existing session's context, or when a workflow has interactive states.
+| | `sdk` | `channel` |
+| --- | --- | --- |
+| Started by | Agent Flow, when you press Run | you, in a terminal |
+| Step-by-step activity | yes | no — only a result per state |
+| Chat with the agent | yes | no |
+| Interrupt a step | yes | no |
+| Interactive states | no | yes |
 
-**`sdk`** — the server drives Claude itself via the Agent SDK. No `.mcp.json`
-entry, no special launch flag, no terminal step. It signs in with your existing
-Claude Code login, so there is no API key to configure.
+The channel backend cannot stream activity because it learns nothing until Claude
+calls `report_action_complete` at the end of a state, and it owns no session to
+send a message into. The app reads these capabilities from the session and adjusts
+rather than showing empty panels.
+
+**`sdk`** — pressing Run starts one of these for you in the open project folder.
+No `.mcp.json` entry, no launch flag, no terminal. It signs in with your existing
+Claude Code login, so there is no API key to configure. To run one by hand:
 
 ```bash
 cd channel-server
@@ -173,13 +218,30 @@ node dist/index.js
 | `AGENT_FLOW_MODEL` | Model override, e.g. `sonnet` |
 | `AGENT_FLOW_PERMISSION_MODE` | How much the run may do without asking. Defaults to `acceptEdits`, which allows file edits but blocks shell commands — workflows with `script` actions need a broader mode. Blocked tools are noted in the state's result rather than failing it. |
 
-The Sessions panel shows which backend a session uses and the directory it runs
-in.
+**`channel`** — what the [Channel Setup](#channel-setup) section above describes.
+The server waits for a Claude Code session you launched to attach over MCP, and
+that session reports back through tool calls. Use it when you want a workflow to
+run inside an existing session's context, or when it has interactive states.
 
-Two differences worth knowing. The SDK backend keeps one Claude session for the
-whole run, so context carries from state to state, and it constrains transition
-choices to the offered targets. It cannot run `interactive` states — those need a
-human to answer, so run those workflows on the channel backend.
+The SDK backend keeps one Claude session for the whole run, so context carries
+from state to state — and from your chat messages into the states that follow.
+It constrains transition choices to the offered targets, which the channel
+backend does not validate at all. It cannot run `interactive` states: those need
+a human to answer and a headless turn has no one to ask, so run those workflows
+on the channel backend.
+
+### If a run will not start
+
+Agent Flow reports the cause in place, with the server's own log tail. The two
+common ones:
+
+- **"Could not find Node.js"** — a desktop app does not inherit your shell's
+  `PATH`, so Node has to be installed somewhere standard (`brew install node`)
+  or on your login shell's `PATH`.
+- **"Could not find the channel server"** — build it once with
+  `cd channel-server && npm install && npm run build`.
+
+Servers Agent Flow starts are stopped when it quits.
 
 ## Example: Debug Workflow
 

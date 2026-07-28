@@ -82,6 +82,80 @@ hang or a corrupted run before it was fixed.
   gap between POST and EventSource handshake) while a reconnecting one gets only
   what it missed. Re-sending history would settle the current iteration of a
   cyclic workflow with an earlier iteration's result.
+- **Activity and control events are buffered separately.** Activity outnumbers
+  control events by orders of magnitude during a busy state, and one shared
+  bounded buffer let a burst evict a buffered `action_complete` before the client
+  attached — hanging the run on a completion that was silently dropped. Two
+  buffers make that impossible by construction; ids still come from one counter,
+  so replay merges them back into one ascending sequence.
+- **Chat failures must never use the `error` event type.** The engine treats
+  `error` as a fatal channel drop and rejects the in-flight action *and*
+  transition waiters, so a failed chat message would abort a healthy run. Chat
+  reports on `chat_complete`, which carries an optional `error` field.
+- **Attaching is not registering.** `/register` mints a run id and clears the
+  buffer. Selecting a session merely to watch it must only open the SSE stream —
+  registering would destroy the transcript of the run already in flight and
+  orphan whichever client was attached, since every later event then fails that
+  client's run-id check.
+
+### Projects, and how a run is launched
+
+A **project** is a folder, stored in `~/.agent-flow/projects.json` (deliberately
+not `settings.json`, which is `UpdateSettings` serialized at the top level).
+It is the working directory a run reads and writes, so it is a consent surface,
+not a preference — runs default to `acceptEdits`.
+
+Pressing Run spawns a channel server on the SDK backend via `launcher.rs`. Two
+details there were established by experiment and fail silently if changed:
+
+- **Never `env_clear()` on the child.** `claude` reads its stored login from the
+  macOS Keychain and that lookup needs `USER`; without it every turn fails with
+  "Not logged in". `LOGNAME` and `SHELL` do not substitute.
+- **Resolve `node` to an absolute path.** A Finder-launched `.app` gets
+  `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, which contains no Homebrew, nvm, fnm or
+  volta directory.
+
+Sessions are scoped to the open project by `cwd`. `pickSession` must never fall
+back across folders: it previously chose the newest session anywhere on the
+machine, which could hand an edit-capable Claude a directory the user never
+picked.
+
+### Attempts, not states
+
+`ExecutionState.history` holds one record per state and is overwritten in place.
+That is fine for colouring the graph and nothing else. Anything that needs to
+survive a loop lives in `attempts`, which is append-only: one entry per *visit*,
+each with its own activity, result and the transition that followed it. A
+research loop revisiting a state five times produces five attempts; the old
+model destroyed four of them.
+
+`attemptId` is minted by the **engine**, before it POSTs, and echoed by the
+server onto every event it produces. It cannot be minted server-side:
+fire-and-ack routinely delivers events before the POST resolves, so only a value
+the client already holds can file them. `pickTransition` must carry the state's
+attempt id too, or the transition turn's activity has nothing to attach to and
+is dropped.
+
+### Claude Code interop
+
+A run driven by the SDK backend *is* an ordinary Claude Code session. It writes
+`~/.claude/projects/<mangled-cwd>/<claude-session-id>.jsonl`, and
+`claude --resume <id>` reopens it with full context — including any chat sent
+from the app. `SdkBackend` captures that id from the first turn's `system/init`
+and it is persisted to the session file and announced as `session_meta`.
+
+The directory name is `cwd` with every non-alphanumeric character replaced by
+`-`. **That is lossy** (`/a/b` and `/a-b` collide), so `claude_sessions.rs`
+confirms each transcript against the `cwd` recorded inside it rather than
+trusting the directory name.
+
+### Backend capabilities
+
+Sessions advertise `{ activity, chat, interrupt }`. All three are false on the
+channel backend: it learns nothing until Claude calls `report_action_complete`,
+and owns no session to send a message into. `/chat` and `/interrupt` answer 501
+there. The UI must degrade against these flags rather than rendering empty
+panels that read as broken.
 
 ## Key Conventions
 
