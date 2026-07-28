@@ -40,7 +40,7 @@ export interface Attempt {
   label: string;
   /** 1-based ordinal among this state's visits. Always 1 for chat. */
   index: number;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "stopped";
   startedAt: string;
   completedAt?: string;
   activity: ActivityEntry[];
@@ -385,6 +385,11 @@ export class StateMachineEngine {
       this.updateStateExecution(currentId, "running");
       this.addOutput(`\n--- State: ${wfState.name} ---`);
 
+      // Kept past the action so the transition turn's activity can be filed
+      // against the visit it followed, rather than being dropped for want of an
+      // attempt to belong to.
+      let stateAttemptId: string | null = null;
+
       // Execute actions with timeout
       const actions = wfState.actions ?? [];
       if (actions.length > 0) {
@@ -394,6 +399,7 @@ export class StateMachineEngine {
         // It has to be minted client-side: fire-and-ack routinely delivers events
         // before the POST resolves, so only a value we already hold can file them.
         const attemptId = newAttemptId();
+        stateAttemptId = attemptId;
         this.openAttempt({
           attemptId,
           kind: "state",
@@ -450,11 +456,15 @@ export class StateMachineEngine {
         try {
           await completion;
         } catch (err) {
+          // stop() rejects this waiter to break the loop. That is the user
+          // asking the run to end, not a channel failure, so it must not be
+          // reported as one — doing so left a deliberate Stop showing a red
+          // "Channel error" and a status of error rather than stopped.
+          if (this.stopped) break;
           this.setError(`Channel error while waiting for action: ${(err as Error).message}`);
           break;
         } finally {
           this.awaitingStateId = null;
-          this.currentAttemptId = null;
         }
       }
 
@@ -492,6 +502,9 @@ export class StateMachineEngine {
         await this.client.pickTransition({
           sessionId: this.sessionId,
           stateId: currentId!,
+          // Without this the transition turn's activity carries no attempt and
+          // is discarded, so the reasoning behind a loop-back is invisible.
+          ...(stateAttemptId ? { attemptId: stateAttemptId } : {}),
           options: outgoing.map((t) => ({
             to: t.to,
             description: t.description || `Go to ${t.to}`,
@@ -511,10 +524,12 @@ export class StateMachineEngine {
       try {
         picked = await chosen;
       } catch (err) {
+        if (this.stopped) break;
         this.setError(`Channel error while waiting for transition: ${(err as Error).message}`);
         break;
       } finally {
         this.awaitingTransitionFrom = null;
+        this.currentAttemptId = null;
       }
 
       currentId = picked;
@@ -553,7 +568,9 @@ export class StateMachineEngine {
     this.rejectTransition?.(new Error("Stopped by user"));
     this.resolveTransition = null;
     this.rejectTransition = null;
-    this.closeAttempt(this.currentAttemptId, "error", undefined, "Stopped by user");
+    // Not "error": the user asked for this, and a red card would read as a
+    // failure they need to investigate.
+    this.closeAttempt(this.currentAttemptId, "stopped", undefined, undefined);
     this.currentAttemptId = null;
     this.resumeResolve?.();
     this.resumeResolve = null;

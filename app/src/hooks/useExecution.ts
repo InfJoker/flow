@@ -48,6 +48,10 @@ export function useExecution(projectPath: string | null) {
   const [capabilities, setCapabilities] = useState<SessionCapabilities>(NO_CAPABILITIES);
   const [claudeSessionId, setClaudeSessionId] = useState<string | null>(null);
   const [launchState, setLaunchState] = useState<LaunchState>({ kind: "idle" });
+  // Whether a run is attached that can carry a chat message. A session can
+  // advertise chat support while we are only observing it, and an engine-less
+  // send would silently discard what the user typed.
+  const [chatReady, setChatReady] = useState(false);
 
   const engineRef = useRef<StateMachineEngine | null>(null);
   const clientRef = useRef<ChannelClient | null>(null);
@@ -62,6 +66,7 @@ export function useExecution(projectPath: string | null) {
     clientRef.current = null;
     setCapabilities(NO_CAPABILITIES);
     setClaudeSessionId(null);
+    setChatReady(false);
   }, []);
 
   const refreshSessions = useCallback(async () => {
@@ -143,6 +148,7 @@ export function useExecution(projectPath: string | null) {
         (state) => setExecutionState(state)
       );
       engineRef.current = engine;
+      setChatReady(true);
 
       return engine;
     },
@@ -225,8 +231,12 @@ export function useExecution(projectPath: string | null) {
   const interrupt = useCallback(async () => {
     await engineRef.current?.interrupt();
   }, []);
-  const sendChat = useCallback(async (text: string) => {
-    await engineRef.current?.sendChat(text);
+  /** Resolves false when there is no run to carry the message. */
+  const sendChat = useCallback(async (text: string): Promise<boolean> => {
+    const engine = engineRef.current;
+    if (!engine) return false;
+    await engine.sendChat(text);
+    return true;
   }, []);
   const dismissLaunchError = useCallback(() => setLaunchState({ kind: "idle" }), []);
 
@@ -250,6 +260,7 @@ export function useExecution(projectPath: string | null) {
     sessions: sessionsForProject(sessions, projectPath),
     activeSessionId,
     capabilities,
+    chatReady,
     claudeSessionId,
     launchState,
     dismissLaunchError,

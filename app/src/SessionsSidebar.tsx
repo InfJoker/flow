@@ -138,7 +138,7 @@ export default function SessionsSidebar({
           <div className="sessions-header sessions-subhead">
             <div className="panel-label">Claude Code here</div>
           </div>
-          <p className="sessions-hint sessions-interop">
+          <p className="sessions-hint sessions-interop" id="claude-interop-note">
             Runs started here are ordinary Claude Code sessions — resume one in a
             terminal to carry on with its full context.
           </p>

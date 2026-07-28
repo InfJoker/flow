@@ -198,8 +198,36 @@ fn log_tail(path: &Path, lines: usize) -> String {
 ///
 /// Returns only once the server has published its session file, so the caller can
 /// connect immediately rather than polling for a session that may never appear.
+///
+/// `async` and dispatched to the blocking pool on purpose: Tauri runs synchronous
+/// commands on the main thread, and this one sleeps in a poll loop for up to
+/// `STARTUP_TIMEOUT`, which would freeze the window for that whole time.
 #[tauri::command]
-pub fn start_session(
+pub async fn start_session(
+    project: String,
+    workflow_id: String,
+    workflow_name: String,
+    model: Option<String>,
+    permission_mode: Option<String>,
+    channel_server_path: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<SessionInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        start_session_blocking(
+            project,
+            workflow_id,
+            workflow_name,
+            model,
+            permission_mode,
+            channel_server_path,
+            app,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to start the launcher task: {}", e))?
+}
+
+fn start_session_blocking(
     project: String,
     workflow_id: String,
     workflow_name: String,
@@ -269,6 +297,9 @@ pub fn start_session(
         // A server that died on startup will never publish a session file, so
         // stop waiting the moment the process is gone and report why.
         if !crate::process::is_process_alive(pid) {
+            // It is already gone; keeping it on the reap list risks signalling
+            // whatever process the OS next gives this pid to.
+            forget_spawned(pid);
             let tail = log_tail(&log_path, 12);
             return Err(format!(
                 "The channel server exited during startup.{}",
@@ -282,6 +313,7 @@ pub fn start_session(
 
         if Instant::now() >= deadline {
             let _ = kill_pid(pid);
+            forget_spawned(pid);
             return Err(format!(
                 "The channel server did not become ready within {}s. See {}",
                 STARTUP_TIMEOUT.as_secs(),

@@ -70,6 +70,8 @@ export class ChannelClient {
   async pickTransition(payload: {
     sessionId: string;
     stateId: string;
+    /** The state attempt this transition follows, so its activity is filed there. */
+    attemptId?: string;
     options: { to: string; description: string }[];
   }): Promise<void> {
     await checkedFetch(`${this.baseUrl}/transition`, {

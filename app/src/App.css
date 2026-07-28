@@ -26,6 +26,11 @@
   --accent-yellow: #d29922;
   --accent-red: #da3633;
   --accent-blue-light: #58a6ff;
+  /* Foreground variants of the accents above. --accent-red and --accent-purple
+     are 4.11:1 on --bg-primary — fine as borders and fills, below WCAG AA (4.5:1)
+     as small text. These are 5.65:1 and 7.51:1 respectively. */
+  --accent-red-fg: #f85149;
+  --accent-purple-fg: #bc8cff;
 }
 
 body {
@@ -897,6 +902,9 @@ body {
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
   padding: 12px;
+  /* .run-view is overflow:hidden, so without this everything past the fold —
+     the Claude Code list and its resume commands — is simply unreachable. */
+  overflow-y: auto;
 }
 
 /* A row is a container now, because the resume-command button has to sit beside
@@ -1038,9 +1046,14 @@ body {
 .sessions-hint {
   font-size: 11px;
   color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Only paths and commands get the monospace/break-anywhere treatment; applying it
+   to the class itself hyphenated ordinary sentences mid-word. */
+.sessions-hint.is-command {
   font-family: var(--font-mono, ui-monospace, monospace);
   word-break: break-all;
-  line-height: 1.5;
 }
 
 .output-line.error {
@@ -1126,6 +1139,19 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.activity-run-status {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.activity-run-status.error {
+  color: var(--accent-red-fg);
+}
+
 .activity-scroll {
   flex: 1;
   overflow-y: auto;
@@ -1155,6 +1181,14 @@ body {
 
 .attempt.state.error {
   border-color: var(--accent-red);
+}
+
+.attempt.state.stopped {
+  border-color: var(--accent-yellow);
+}
+
+.attempt-dot.stopped {
+  background: var(--accent-yellow);
 }
 
 .attempt-summary {
@@ -1269,12 +1303,12 @@ body {
 }
 
 .activity-tool-name {
-  color: var(--accent-purple);
+  color: var(--accent-purple-fg);
   flex-shrink: 0;
 }
 
 .activity-tool.failed .activity-tool-name {
-  color: var(--accent-red);
+  color: var(--accent-red-fg);
 }
 
 .activity-tool-detail {
@@ -1292,7 +1326,7 @@ body {
 }
 
 .activity-tool.failed .activity-tool-status {
-  color: var(--accent-red);
+  color: var(--accent-red-fg);
 }
 
 .attempt-result {
@@ -1320,7 +1354,7 @@ body {
 
 .attempt-error {
   font-size: 12px;
-  color: var(--accent-red);
+  color: var(--accent-red-fg);
   margin: 8px 0 0;
   line-height: 1.5;
 }
@@ -1350,9 +1384,17 @@ body {
   padding: 8px 10px;
 }
 
+.chat-author {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
 .chat-message {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   margin: 0;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -1375,11 +1417,11 @@ body {
 }
 
 .chat-reply {
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .chat-error {
-  color: var(--accent-red);
+  color: var(--accent-red-fg);
 }
 
 .activity-composer {
@@ -1433,7 +1475,7 @@ body {
   background: none;
   border: none;
   color: var(--accent-blue-light);
-  font-size: 10px;
+  font-size: 11px;
   text-align: left;
   padding: 0 10px 6px;
   cursor: pointer;
@@ -1534,7 +1576,7 @@ body {
 
 .project-menu-error {
   font-size: 11px;
-  color: var(--accent-red);
+  color: var(--accent-red-fg);
   padding: 6px 8px;
   margin: 0;
   line-height: 1.5;

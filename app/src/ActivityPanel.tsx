@@ -5,11 +5,20 @@ import type { SessionCapabilities } from "./hooks/useExecution";
 interface ActivityPanelProps {
   executionState: ExecutionState;
   capabilities: SessionCapabilities;
+  /**
+   * Whether a run is attached that can actually carry a message. A session can
+   * advertise chat support while the app is only *observing* it, in which case
+   * there is nothing to send through.
+   */
+  canChat: boolean;
+  /** Display name for the filtered state, even if it has never run. */
+  filterStateName: string | null;
   /** When set, only this state's attempts are shown. */
   filterStateId: string | null;
   onClearFilter: () => void;
   onFilterState: (stateId: string) => void;
-  onSendChat: (text: string) => void;
+  /** Resolves false when the message could not be dispatched. */
+  onSendChat: (text: string) => Promise<boolean> | boolean;
   onInterrupt: () => void;
 }
 
@@ -77,11 +86,21 @@ function AttemptCard({
   openByDefault: boolean;
   onFilterState: (stateId: string) => void;
 }) {
+  // Read once, at mount. `open` is a live DOM property, so leaving it driven by
+  // a prop meant that the instant a newer attempt appended, this card's prop
+  // flipped true→false and React closed it — collapsing the very card the user
+  // was reading, on the most frequent event in the app. After mount, only the
+  // user opens and closes cards.
+  const initiallyOpen = useRef(openByDefault).current;
+
   if (attempt.kind === "chat") {
     return (
       <div className="attempt chat">
+        <div className="chat-author">You</div>
         <p className="chat-message">{attempt.prompt}</p>
         {attempt.status === "running" && <p className="chat-pending">Waiting for a reply…</p>}
+        {/* The reply is the payload the user is waiting on, so it gets the
+            stronger treatment — not the message they just typed themselves. */}
         {attempt.result && <p className="chat-reply">{attempt.result}</p>}
         {attempt.error && <p className="chat-error">Could not deliver: {attempt.error}</p>}
       </div>
@@ -89,7 +108,7 @@ function AttemptCard({
   }
 
   return (
-    <details className={`attempt state ${attempt.status}`} open={openByDefault}>
+    <details className={`attempt state ${attempt.status}`} open={initiallyOpen || undefined}>
       <summary className="attempt-summary">
         <span className={`attempt-dot ${attempt.status}`} aria-hidden="true" />
         {/* A button inside summary would swallow the disclosure toggle, so the
@@ -101,7 +120,11 @@ function AttemptCard({
           </span>
         )}
         <span className="attempt-meta">
-          {attempt.status === "running" ? "running" : duration(attempt)}
+          {attempt.status === "running"
+            ? "running"
+            : attempt.status === "stopped"
+              ? "stopped"
+              : duration(attempt)}
         </span>
       </summary>
 
@@ -137,6 +160,8 @@ function AttemptCard({
 export default function ActivityPanel({
   executionState,
   capabilities,
+  canChat,
+  filterStateName,
   filterStateId,
   onClearFilter,
   onFilterState,
@@ -157,9 +182,13 @@ export default function ActivityPanel({
     return { rows: scoped.slice(-WINDOW), hidden: Math.max(0, scoped.length - WINDOW) };
   }, [attempts, filterStateId]);
 
+  // Prefer the workflow's own name: a state that has not run yet has no attempt
+  // to borrow a label from, and showing its raw id reads as a bug.
   const filteredName = filterStateId
-    ? attempts.find((a) => a.stateId === filterStateId)?.label ?? filterStateId
+    ? filterStateName ?? attempts.find((a) => a.stateId === filterStateId)?.label ?? filterStateId
     : null;
+
+  const chatEnabled = capabilities.chat && canChat;
 
   // Follow the tail only while the user is already at the bottom; yanking the
   // viewport while they are reading an earlier attempt is the fastest way to
@@ -181,11 +210,13 @@ export default function ActivityPanel({
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  const send = () => {
+  // Only clear the box once the message is actually on its way. Clearing first
+  // destroyed what the user typed whenever nothing was there to carry it.
+  const send = async () => {
     const text = draft.trim();
     if (!text) return;
-    onSendChat(text);
-    setDraft("");
+    const dispatched = await onSendChat(text);
+    if (dispatched !== false) setDraft("");
   };
 
   const running = status === "running";
@@ -196,11 +227,30 @@ export default function ActivityPanel({
       <div className="activity-header">
         <div className="panel-label">Activity</div>
         {running && capabilities.interrupt && (
-          <button className="panel-btn-sm" onClick={onInterrupt} title="End the current step">
+          <button
+            className="panel-btn-sm"
+            onClick={onInterrupt}
+            /* Says what actually happens: the turn stops where it is, its partial
+               work becomes the state's result, and the run carries on from there.
+               "End the current step" implied the run would hold. */
+            title="Stop this step now and continue with whatever it has done so far"
+          >
             Interrupt step
           </button>
         )}
       </div>
+
+      {/* Run-level outcome. Attempts show what each state did; without this a run
+          that failed or finished looked identical to one still thinking. */}
+      {(status === "error" || status === "completed" || status === "paused") && (
+        <p className={`activity-run-status ${status}`} role="status">
+          {status === "error"
+            ? `Run failed — ${executionState.error ?? "see the last step"}`
+            : status === "paused"
+              ? "Run paused."
+              : "Run finished."}
+        </p>
+      )}
 
       {filterStateId && (
         <div className="activity-filter">
@@ -221,8 +271,15 @@ export default function ActivityPanel({
       <div className="activity-scroll" ref={scrollRef}>
         {visible.hidden > 0 && (
           <p className="activity-truncated">
-            {visible.hidden} earlier {visible.hidden === 1 ? "entry" : "entries"} not shown.
-            {!filterStateId && " Open a state to see all of its runs."}
+            Showing the most recent {WINDOW}. {visible.hidden} earlier{" "}
+            {visible.hidden === 1 ? "entry is" : "entries are"} not shown
+            {!filterStateId && " — click a state to narrow to its own runs"}.
+          </p>
+        )}
+
+        {filterStateId && visible.rows.length === 0 && (
+          <p className="activity-empty">
+            {filteredName} has not run yet.
           </p>
         )}
 
@@ -251,13 +308,15 @@ export default function ActivityPanel({
           value={draft}
           rows={2}
           placeholder={
-            capabilities.chat
-              ? running
-                ? "Send a message — delivered after this step finishes"
-                : "Send a message to the agent"
-              : "This session does not accept messages"
+            !capabilities.chat
+              ? "This session does not accept messages"
+              : !canChat
+                ? "Watching this session — press Run to send messages"
+                : running
+                  ? "Send a message — delivered after this step finishes"
+                  : "Send a message to the agent"
           }
-          disabled={!capabilities.chat}
+          disabled={!chatEnabled}
           onChange={(e) => setDraft(e.target.value)}
           // Enter sends, but never mid-composition: committing a Japanese,
           // Chinese or Korean candidate also presses Enter.
@@ -266,15 +325,15 @@ export default function ActivityPanel({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !composing.current) {
               e.preventDefault();
-              send();
+              void send();
             }
           }}
           aria-label="Message the agent"
         />
         <button
           className="composer-send"
-          onClick={send}
-          disabled={!capabilities.chat || !draft.trim()}
+          onClick={() => void send()}
+          disabled={!chatEnabled || !draft.trim()}
         >
           Send
         </button>

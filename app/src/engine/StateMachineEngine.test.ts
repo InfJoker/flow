@@ -497,6 +497,112 @@ describe("StateMachineEngine", () => {
 
       expect(client.pickTransition).not.toHaveBeenCalled();
     });
+
+    // stop() rejects the action waiter to break the loop. The loop must not
+    // report that rejection as a channel failure — Stop is the user's own
+    // instruction, and a red "Channel error" is both wrong and alarming.
+    it("does not report a stopped run as an error", async () => {
+      const { client } = manualClient();
+      const engine = new StateMachineEngine(
+        makeWorkflow([{ type: "prompt", content: "x" }]),
+        client,
+        "sess",
+        () => {}
+      );
+
+      const running = engine.start();
+      await new Promise((r) => setTimeout(r, 0));
+      engine.stop();
+      await running;
+
+      expect(engine.getState().status).toBe("completed");
+      expect(engine.getState().error).toBeUndefined();
+      expect(engine.getState().output.join("\n")).not.toContain("Channel error");
+    });
+
+    it("marks the interrupted visit stopped rather than failed", async () => {
+      const { client } = manualClient();
+      const engine = new StateMachineEngine(
+        makeWorkflow([{ type: "prompt", content: "x" }]),
+        client,
+        "sess",
+        () => {}
+      );
+
+      const running = engine.start();
+      await new Promise((r) => setTimeout(r, 0));
+      engine.stop();
+      await running;
+
+      expect(engine.getState().attempts[0].status).toBe("stopped");
+    });
+  });
+
+  describe("transition activity", () => {
+    // Transition turns run real Claude turns that use tools. Without an attempt
+    // to file them against, every one of those events was silently dropped and
+    // the reasoning behind a loop-back was invisible.
+    it("attributes the transition turn to the visit it followed", async () => {
+      const workflow: Workflow = {
+        id: "wf",
+        name: "wf",
+        description: "",
+        states: [
+          { id: "a", name: "A", actions: [{ type: "prompt", content: "x" }] },
+          { id: "b", name: "B", actions: [] },
+          { id: "c", name: "C", actions: [] },
+        ],
+        transitions: [
+          { from: "a", to: "b", description: "one" },
+          { from: "a", to: "c", description: "two" },
+        ],
+      };
+
+      const listeners = new Set<Listener>();
+      const emit = (e: { type: string; data: Record<string, unknown> }) => {
+        for (const fn of listeners) fn(e);
+      };
+      const client = {
+        executeState: vi.fn(async (p: { stateId: string; attemptId?: string }) => {
+          emit({
+            type: "action_complete",
+            data: { stateId: p.stateId, results: "ok", attemptId: p.attemptId },
+          });
+        }),
+        pickTransition: vi.fn(async (p: { stateId: string; attemptId?: string }) => {
+          // Activity from the transition turn, stamped as the server would.
+          emit({
+            type: "activity",
+            data: {
+              attemptId: p.attemptId,
+              stateId: p.stateId,
+              kind: "assistant_text",
+              text: "Reviewing what just happened",
+            },
+          });
+          emit({
+            type: "transition_picked",
+            data: { stateId: p.stateId, picked: "b", reason: "one fits" },
+          });
+        }),
+        subscribe: vi.fn((cb: Listener) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        }),
+        disconnect: vi.fn(),
+      } as unknown as ChannelClient;
+
+      const engine = new StateMachineEngine(workflow, client, "sess", () => {});
+      await engine.start("a");
+
+      const sent = (client.pickTransition as unknown as { mock: { calls: [{ attemptId?: string }][] } })
+        .mock.calls[0][0];
+      expect(sent.attemptId).toBeTruthy();
+
+      const attemptA = engine.getState().attempts.find((a) => a.stateId === "a")!;
+      expect(sent.attemptId).toBe(attemptA.attemptId);
+      expect(attemptA.activity.map((e) => e.text)).toContain("Reviewing what just happened");
+    });
   });
 
   describe("chat", () => {

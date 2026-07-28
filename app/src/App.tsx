@@ -84,6 +84,7 @@ function AppInner() {
     sessions,
     activeSessionId,
     capabilities,
+    chatReady,
     claudeSessionId,
     launchState,
     dismissLaunchError,
@@ -631,6 +632,7 @@ function AppInner() {
             claudeSessions={claudeSessions}
             activeSessionId={activeSessionId}
             capabilities={capabilities}
+            canChat={chatReady}
             claudeSessionId={claudeSessionId}
             projectPath={project.activePath}
             filterStateId={filterStateId}

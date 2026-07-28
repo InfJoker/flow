@@ -22,13 +22,14 @@ interface RunViewProps {
   claudeSessions: ClaudeSession[];
   activeSessionId: string | null;
   capabilities: SessionCapabilities;
+  canChat: boolean;
   claudeSessionId: string | null;
   projectPath: string | null;
   filterStateId: string | null;
   onFilterState: (stateId: string | null) => void;
   onSelectSession: (session: SessionInfo) => void;
   onRefreshSessions: () => void;
-  onSendChat: (text: string) => void;
+  onSendChat: (text: string) => Promise<boolean> | boolean;
   onInterrupt: () => void;
 }
 
@@ -40,6 +41,7 @@ export default function RunView({
   claudeSessions,
   activeSessionId,
   capabilities,
+  canChat,
   claudeSessionId,
   projectPath,
   filterStateId,
@@ -49,6 +51,14 @@ export default function RunView({
   onSendChat,
   onInterrupt,
 }: RunViewProps) {
+  // Resolved from the graph, not from attempts: a state the run has not reached
+  // still needs a name when the user clicks it.
+  const filterStateName = filterStateId
+    ? ((nodes.find((n) => n.id === filterStateId)?.data as
+        | { state?: { name?: string } }
+        | undefined)?.state?.name ?? null)
+    : null;
+
   // How many times each state has been visited, so a node can show that a loop
   // has gone round more than once without opening the transcript.
   const visitCounts = useMemo(() => {
@@ -121,6 +131,8 @@ export default function RunView({
       <ActivityPanel
         executionState={executionState}
         capabilities={capabilities}
+        canChat={canChat}
+        filterStateName={filterStateName}
         filterStateId={filterStateId}
         onClearFilter={() => onFilterState(null)}
         onFilterState={onFilterState}
