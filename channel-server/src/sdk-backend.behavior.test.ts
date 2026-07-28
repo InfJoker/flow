@@ -435,6 +435,77 @@ describe("interrupt", () => {
   });
 });
 
+describe("abandonRun", () => {
+  /**
+   * Events are stamped with the run id current when they are *emitted*, so a
+   * turn still running when the next run registers would have its completion
+   * relabelled as the new run's and settle a waiter for work that run never
+   * asked for — the exact desync run ids exist to prevent.
+   */
+  it("suppresses the completion of a turn the next run superseded", async () => {
+    let release: (() => void) | undefined;
+    queryMock.mockImplementation(() =>
+      (async function* () {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        yield ok("work from the previous run");
+      })()
+    );
+    const { events, emit } = collector();
+    const backend = new SdkBackend(emit, "/tmp");
+
+    const running = backend.execute(executePayload({ attemptId: "old" }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    backend.abandonRun();
+    release?.();
+    await running;
+
+    expect(events.some((e) => e.type === "action_complete")).toBe(false);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  it("suppresses a superseded chat reply too", async () => {
+    let release: (() => void) | undefined;
+    queryMock.mockImplementation(() =>
+      (async function* () {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        yield ok("late reply");
+      })()
+    );
+    const { events, emit } = collector();
+    const backend = new SdkBackend(emit, "/tmp");
+
+    const running = backend.chat({ sessionId: "s", attemptId: "chat-old", text: "hi" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    backend.abandonRun();
+    release?.();
+    await running;
+
+    expect(events.some((e) => e.type === "chat_complete")).toBe(false);
+  });
+
+  // The session survives: the next run resumes onto the same Claude conversation.
+  it("leaves the backend usable for the run that follows", async () => {
+    queryMock.mockImplementation(() => turn(init("claude-1"), ok("new run work"))());
+    const { events, emit } = collector();
+    const backend = new SdkBackend(emit, "/tmp");
+
+    await backend.execute(executePayload({ attemptId: "first" }));
+    backend.abandonRun();
+    await backend.execute(executePayload({ attemptId: "second" }));
+
+    const completions = events.filter((e) => e.type === "action_complete");
+    expect(completions).toHaveLength(2);
+    // Resumed onto the same Claude session rather than starting a fresh one.
+    expect(queryMock.mock.calls[1][0].options.resume).toBe("claude-1");
+  });
+});
+
 describe("summarizeToolInput", () => {
   it("picks the field that identifies each kind of call", () => {
     expect(summarizeToolInput("Bash", { command: "npm test", timeout: 5 })).toBe("npm test");

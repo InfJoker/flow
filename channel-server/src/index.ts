@@ -101,6 +101,11 @@ async function main() {
         }
       : {}),
     onRegister: () => {
+      // Anything still running belongs to the run that just ended. Events are
+      // stamped with the run id current when they are emitted, so letting an old
+      // turn finish would relabel its completion as this run's and settle a
+      // waiter for work this run never asked for.
+      sdk?.abandonRun();
       // A newly registered run needs the session's capabilities and, if the
       // session has already had a turn, the Claude session id. Registration
       // clears the event buffer, so this must be re-sent rather than relied on

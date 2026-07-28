@@ -107,6 +107,12 @@ export class SdkBackend {
   // result message's subtype.
   private interruptRequested = false;
   private stopped = false;
+  // Bumped whenever a new run registers. Work started under an earlier
+  // generation must not report anything: `broadcastSSE` stamps events with the
+  // run id current at *emit* time, so a turn still in flight when the next run
+  // registers would have its completion relabelled as the new run's and settle
+  // that run's waiter — precisely the desync run ids exist to prevent.
+  private generation = 0;
 
   constructor(
     private readonly emit: Emit,
@@ -137,6 +143,20 @@ export class SdkBackend {
   }
 
   /**
+   * Abandon whatever is in flight because a new run has started.
+   *
+   * The Claude session itself survives — the next run resumes onto it — but the
+   * previous run's turn is aborted and anything it would still have reported is
+   * suppressed.
+   */
+  abandonRun(): void {
+    this.generation++;
+    this.inFlight?.abort();
+    this.inFlight = null;
+    this.currentQuery = null;
+  }
+
+  /**
    * End the current turn without ending the session.
    *
    * The turn stops where it is and its partial work is reported as the attempt's
@@ -159,6 +179,11 @@ export class SdkBackend {
   // Callers fire these without awaiting (see the fire-and-ack note in index.ts),
   // so a rejection here would surface as an unhandled rejection and take down the
   // process. Every failure must become an `error` SSE event instead.
+  /** True once a newer run has superseded the generation `work` began under. */
+  private superseded(startedAt: number): boolean {
+    return this.generation !== startedAt;
+  }
+
   private serialize(label: string, work: () => Promise<void>): Promise<void> {
     const next = this.chain.then(
       () => work(),
@@ -346,6 +371,7 @@ export class SdkBackend {
 
       if (this.stopped) return;
 
+      const generation = this.generation;
       const attemptId = payload.attemptId ?? "";
       // A state's actions may each request a model; the state runs as one turn, so
       // the first explicit model wins rather than silently ignoring all of them.
@@ -382,14 +408,15 @@ export class SdkBackend {
         // A stop aborts the turn on purpose; reporting that as a channel error
         // would surface a phantom failure and, since events are buffered, poison
         // the next run.
-        if (this.stopped) return;
+        if (this.stopped || this.superseded(generation)) return;
         this.emit({ type: "error", data: { message: `State "${payload.stateId}": ${String(err)}` } });
         return;
       }
 
       // A stopped run has no listener that cares, and reporting completion would
-      // walk the engine on to the next state.
-      if (this.stopped) return;
+      // walk the engine on to the next state. A superseded one is worse: the
+      // event would be stamped with the *new* run's id and settle its waiter.
+      if (this.stopped || this.superseded(generation)) return;
 
       this.emit({
         type: "action_complete",
@@ -409,6 +436,7 @@ export class SdkBackend {
     return this.serialize(`Transition from "${payload.stateId}"`, async () => {
       let picked: string | undefined;
       let reason = "";
+      const generation = this.generation;
       const attemptId = payload.attemptId ?? "";
 
       if (this.stopped) return;
@@ -434,12 +462,12 @@ export class SdkBackend {
           reason = out?.reason ?? "";
         });
       } catch (err) {
-        if (this.stopped) return;
+        if (this.stopped || this.superseded(generation)) return;
         this.emit({ type: "error", data: { message: `Transition from "${payload.stateId}": ${String(err)}` } });
         return;
       }
 
-      if (this.stopped) return;
+      if (this.stopped || this.superseded(generation)) return;
 
       // The schema constrains next_state to the offered targets, but a dropped or
       // malformed structured_output would otherwise send the engine to undefined.
@@ -479,6 +507,7 @@ export class SdkBackend {
     return this.serialize(`Chat ${payload.attemptId}`, async () => {
       if (this.stopped) return;
 
+      const generation = this.generation;
       let result = "";
       try {
         await this.withAbort(async (controller) => {
@@ -491,7 +520,7 @@ export class SdkBackend {
           result = turn.result;
         });
       } catch (err) {
-        if (this.stopped) return;
+        if (this.stopped || this.superseded(generation)) return;
         this.emit({
           type: "chat_complete",
           data: { attemptId: payload.attemptId, result: "", error: String(err) },
@@ -499,7 +528,7 @@ export class SdkBackend {
         return;
       }
 
-      if (this.stopped) return;
+      if (this.stopped || this.superseded(generation)) return;
 
       this.emit({ type: "chat_complete", data: { attemptId: payload.attemptId, result } });
     });
