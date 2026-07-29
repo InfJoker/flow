@@ -56,6 +56,10 @@ export function useExecution(projectPath: string | null) {
   const engineRef = useRef<StateMachineEngine | null>(null);
   const clientRef = useRef<ChannelClient | null>(null);
   const unsubRef = useRef<(() => void) | null>(null);
+  // Mirrors activeSessionId for callbacks that must not be rebuilt when it
+  // changes — attachToSession is passed to the sidebar, and a new identity on
+  // every selection would churn its props.
+  const activeSessionIdRef = useRef<string | null>(null);
 
   const cleanup = useCallback(() => {
     unsubRef.current?.();
@@ -76,21 +80,21 @@ export function useExecution(projectPath: string | null) {
   }, []);
 
   /**
-   * Open a channel to a session without claiming it.
+   * Tear down whatever is attached and open a fresh channel to `session`.
    *
    * Deliberately does NOT register. `/register` mints a new run id and clears the
    * server's event buffer, so registering merely to look at a session destroys
    * the transcript of the run already in flight and orphans whichever client was
    * attached — every later event fails that client's run-id check and it waits
-   * forever. Selecting a session in the sidebar is an observation, so it gets an
-   * observer's connection.
+   * forever.
    */
-  const attachToSession = useCallback(
+  const openClient = useCallback(
     (session: SessionInfo): ChannelClient => {
       cleanup();
 
       const client = new ChannelClient(session.port);
       clientRef.current = client;
+      activeSessionIdRef.current = session.sessionId;
       setActiveSessionId(session.sessionId);
       setClaudeSessionId(session.claudeSessionId ?? null);
 
@@ -111,10 +115,29 @@ export function useExecution(projectPath: string | null) {
     [cleanup]
   );
 
-  /** Attach, then claim the session for a new run of `workflow`. */
+  /**
+   * Select a session to watch.
+   *
+   * Re-selecting the session already attached is a no-op. Rebuilding the client
+   * would run `cleanup()`, and that stops the engine — so clicking the row for
+   * the run you are currently watching would kill it.
+   */
+  const attachToSession = useCallback(
+    (session: SessionInfo): ChannelClient | null => {
+      if (clientRef.current && activeSessionIdRef.current === session.sessionId) {
+        return clientRef.current;
+      }
+      return openClient(session);
+    },
+    [openClient]
+  );
+
+  /** Take the session over for a new run of `workflow`, replacing anything on it. */
   const connectToSession = useCallback(
     async (session: SessionInfo, workflow: Workflow) => {
-      const client = attachToSession(session);
+      // Always a fresh client: a run needs its own registration and engine, even
+      // when this is the session we were already watching.
+      const client = openClient(session);
 
       // Registering is what scopes the run: it mints the run id the engine uses
       // to reject events left over from a previous run, and clears the server's
@@ -152,7 +175,7 @@ export function useExecution(projectPath: string | null) {
 
       return engine;
     },
-    [attachToSession]
+    [openClient]
   );
 
   /**
@@ -244,6 +267,7 @@ export function useExecution(projectPath: string | null) {
     const sid = activeSessionId;
     const sess = sessions;
     cleanup();
+    activeSessionIdRef.current = null;
     setActiveSessionId(null);
 
     if (sid) {

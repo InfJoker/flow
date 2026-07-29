@@ -310,7 +310,10 @@ function AppInner() {
                       }}
                     >
                       <span className="wl-name">{p.name}</span>
-                      <span className="wl-desc">{p.path}</span>
+                      {/* Not .wl-desc: that is --text-muted, ~2.4:1 on this
+                          background. The path is how you tell two folders with
+                          the same basename apart, so it has to be readable. */}
+                      <span className="project-menu-path">{p.path}</span>
                     </button>
                   ))}
                   {project.error && <p className="project-menu-error">{project.error}</p>}

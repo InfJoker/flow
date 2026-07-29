@@ -1574,6 +1574,19 @@ body {
   background: var(--bg-tertiary);
 }
 
+/* The full path, at --text-secondary (~5.9:1) rather than the --text-muted used
+   by .wl-desc (~2.4:1). Two projects can share a basename; the path is the only
+   thing that distinguishes them, so it is meaningful text, not decoration. */
+.project-menu-path {
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: ltr;
+}
+
 .project-menu-error {
   font-size: 11px;
   color: var(--accent-red-fg);
