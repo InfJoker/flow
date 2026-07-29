@@ -21,6 +21,34 @@ cd app && npm install && npx tauri dev
 cd app/src-tauri && cargo test
 ```
 
+### Keep the Tauri npm and Rust versions on the same minor
+
+`tauri build` refuses to run when the `tauri` crate and `@tauri-apps/api` differ
+on major/minor, and **nothing else catches it** — `vite build`, `vitest` and
+`cargo test` all pass with a mismatch. Adding any `@tauri-apps/plugin-*` can
+re-resolve `@tauri-apps/api` upward and silently break the release build.
+
+After touching Tauri dependencies, run the real thing:
+
+```bash
+cd app && npx tauri build --debug --bundles app
+```
+
+### CI
+
+Three workflows on push to `main`: **Test** (app vitest + `tsc --noEmit`,
+channel-server vitest + build, `cargo test --lib`), **Dev Release** (bundles for
+three targets), and **Audit** (`npm audit --audit-level=moderate` across
+`app`, `channel-server`, `prototype`).
+
+The Rust test job deliberately skips the frontend build — `cargo test --lib`
+compiles with `app/dist` absent, so installing and building the frontend for it
+would be cost for nothing.
+
+GitHub disables scheduled workflows after ~60 days of repository inactivity;
+Audit had been off since June before being re-enabled. If a workflow seems not
+to run, check `gh workflow list --all` before debugging its triggers.
+
 ## Architecture
 
 The app does NOT talk to Claude Code directly. The channel server sits between them:
