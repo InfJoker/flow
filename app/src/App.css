@@ -1139,6 +1139,25 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* Anything in these panels can carry model-authored text: an error holding a
+   stack trace, a transition reason quoting a URL, a path with no spaces. In a
+   380px column an unbroken string would push the panel sideways, so every text
+   block wraps mid-token as a last resort. Rules that ellipsise on one line
+   (.attempt-name, .activity-tool-detail, .claude-session-title) set their own
+   white-space and are unaffected. */
+.attempt-transition-reason,
+.activity-filter-name,
+.chat-pending,
+.attempt-error,
+.project-menu-error,
+.activity-truncated,
+.activity-notice,
+.activity-run-status,
+.sessions-hint,
+.launch-error-body p {
+  overflow-wrap: anywhere;
+}
+
 .activity-run-status {
   font-size: 12px;
   line-height: 1.5;

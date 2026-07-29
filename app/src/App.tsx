@@ -127,13 +127,16 @@ function AppInner() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setSelectedStateId(null);
-      }
+      if (e.key !== "Escape") return;
+      // Innermost surface first: Escape should dismiss whatever is layered on
+      // top before it touches the canvas selection underneath.
+      if (showProjects) setShowProjects(false);
+      else if (showLibrary) setShowLibrary(false);
+      else setSelectedStateId(null);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [showProjects, showLibrary]);
 
   const onConnect: OnConnect = useCallback(
     (connection) => {
