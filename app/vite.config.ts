@@ -18,6 +18,14 @@ export default defineConfig({
     },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
+  test: {
+    // Only the component tests need a DOM. The engine and helper suites are
+    // plain modules, so they declare `@vitest-environment node` and stay fast.
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    // Tauri's `invoke` throws outside the webview; tests that need it mock it.
+    restoreMocks: true,
+  },
   build: {
     // safari15, not the scaffold's safari13: esbuild refuses to down-transpile
     // destructuring for safari <15, which d3-drag/d3-zoom (via React Flow) use.
