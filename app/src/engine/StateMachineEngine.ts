@@ -194,7 +194,8 @@ export class StateMachineEngine {
       } else if (event.type === "error") {
         const data = event.data as { message: string };
         this.addOutput(`[Error] ${data.message}`);
-        this.closeAttempt(this.currentAttemptId, "error", undefined, data.message);
+        // Fatal for the channel, so nothing still open can ever be answered.
+        this.closeAllRunning("error", data.message);
         // Fatal channel drop — abort any in-flight wait so the workflow
         // fails fast instead of hanging forever.
         this.rejectAction?.(new Error(data.message));
@@ -240,6 +241,21 @@ export class StateMachineEngine {
       a.attemptId === attemptId && a.status === "running"
         ? { ...a, status, result: result ?? a.result, error, completedAt: new Date().toISOString() }
         : a
+    );
+  }
+
+  /**
+   * Settle every attempt still marked running.
+   *
+   * `currentAttemptId` only ever tracks the state the run loop is executing —
+   * `sendChat` never sets it — so closing that alone left a chat attempt showing
+   * "Waiting for a reply…" indefinitely once the run stopped or failed, with
+   * nothing that could ever answer it.
+   */
+  private closeAllRunning(status: Attempt["status"], error?: string): void {
+    const now = new Date().toISOString();
+    this.state.attempts = this.state.attempts.map((a) =>
+      a.status === "running" ? { ...a, status, error, completedAt: now } : a
     );
   }
 
@@ -569,8 +585,9 @@ export class StateMachineEngine {
     this.resolveTransition = null;
     this.rejectTransition = null;
     // Not "error": the user asked for this, and a red card would read as a
-    // failure they need to investigate.
-    this.closeAttempt(this.currentAttemptId, "stopped", undefined, undefined);
+    // failure they need to investigate. Every open attempt settles, not just the
+    // running state — a chat awaiting a reply would otherwise wait forever.
+    this.closeAllRunning("stopped");
     this.currentAttemptId = null;
     this.resumeResolve?.();
     this.resumeResolve = null;

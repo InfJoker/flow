@@ -119,12 +119,17 @@ function AttemptCard({
             run {attempt.index}
           </span>
         )}
-        <span className="attempt-meta">
+        {/* Text, not just the dot's colour: a collapsed failed visit and a
+            collapsed successful one were otherwise byte-identical, so a failure
+            in a long run could only be found by opening every card. */}
+        <span className={`attempt-meta ${attempt.status === "error" ? "failed" : ""}`}>
           {attempt.status === "running"
             ? "running"
             : attempt.status === "stopped"
               ? "stopped"
-              : duration(attempt)}
+              : attempt.status === "error"
+                ? `failed · ${duration(attempt)}`
+                : duration(attempt)}
         </span>
       </summary>
 
@@ -254,7 +259,16 @@ export default function ActivityPanel({
 
       {filterStateId && (
         <div className="activity-filter">
-          <button className="activity-filter-back" onClick={onClearFilter}>
+          <button
+            className="activity-filter-back"
+            /* Clearing the filter unmounts this button. Focus would fall to
+               <body>, stranding a keyboard user at the top of the document, so
+               it is handed to the transcript they just returned to. */
+            onClick={() => {
+              onClearFilter();
+              requestAnimationFrame(() => scrollRef.current?.focus());
+            }}
+          >
             ‹ All activity
           </button>
           <span className="activity-filter-name">{filteredName}</span>
@@ -268,7 +282,9 @@ export default function ActivityPanel({
         </p>
       )}
 
-      <div className="activity-scroll" ref={scrollRef}>
+      {/* tabIndex -1 so it can receive focus programmatically when the filter is
+          cleared, and so the transcript is reachable as a scrollable region. */}
+      <div className="activity-scroll" ref={scrollRef} tabIndex={-1} aria-label="Run transcript">
         {visible.hidden > 0 && (
           <p className="activity-truncated">
             Showing the most recent {WINDOW}. {visible.hidden} earlier{" "}

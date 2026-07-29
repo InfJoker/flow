@@ -498,11 +498,18 @@ function AppInner() {
                   : "Open a project folder first"
               }
             >
+              {/* The folder is named on the button itself, not only in the
+                  tooltip. A run edits files and executes shell commands there
+                  under acceptEdits, and a tooltip is mouse-only and easy to miss
+                  — two checkouts sharing a basename are indistinguishable
+                  without it. */}
               {launchState.kind === "starting"
                 ? "Starting…"
-                : selectedState
-                  ? `Run from "${selectedState.name}"`
-                  : "Run"}
+                : !project.activePath
+                  ? "Run"
+                  : selectedState
+                    ? `Run "${selectedState.name}" in ${project.active?.name ?? "project"}`
+                    : `Run in ${project.active?.name ?? "project"}`}
             </button>
           )}
           {isTauri && updater.bannerVisible && updater.status.kind === "available" && (

@@ -40,27 +40,40 @@ function timeAgo(dateStr: string): string {
 
 /** Copy-to-clipboard button that confirms in place rather than via a toast. */
 function CopyCommand({ command, label }: { command: string; label: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
+  const text =
+    state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy resume command";
 
   return (
-    <button
-      className="resume-copy"
-      title={command}
-      aria-label={label}
-      onClick={async (e) => {
-        e.stopPropagation();
-        try {
-          await navigator.clipboard.writeText(command);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        } catch {
-          // Clipboard access can be refused; the command is in the title
-          // attribute either way, so there is still a path to it.
-        }
-      }}
-    >
-      {copied ? "Copied" : "Copy resume command"}
-    </button>
+    <>
+      <button
+        className={`resume-copy ${state === "failed" ? "failed" : ""}`}
+        title={command}
+        /* The accessible name has to carry the outcome too. A static aria-label
+           overrides the button's text, so a screen reader would keep hearing
+           "Copy resume command" after the copy had already happened. */
+        aria-label={state === "idle" ? label : `${text}. ${label}`}
+        onClick={async (e) => {
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(command);
+            setState("copied");
+            setTimeout(() => setState("idle"), 1500);
+          } catch {
+            // Clipboard access can be refused outright, and `navigator.clipboard`
+            // is undefined on an insecure origin. Say so and show the command,
+            // rather than looking like the click did nothing.
+            setState("failed");
+          }
+        }}
+      >
+        {text}
+      </button>
+      {/* Selectable fallback: if the clipboard is unavailable the command still
+          has to be obtainable, and a title tooltip is mouse-only. */}
+      {state === "failed" && <code className="resume-fallback">{command}</code>}
+    </>
   );
 }
 

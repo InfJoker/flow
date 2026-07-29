@@ -1158,6 +1158,17 @@ body {
   padding: 8px;
 }
 
+/* Focused programmatically when the filter is cleared; the ring would otherwise
+   be a large distracting box around the whole transcript. */
+.activity-scroll:focus {
+  outline: none;
+}
+
+.activity-scroll:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+
 .activity-empty {
   font-size: 12px;
   color: var(--text-secondary);
@@ -1257,6 +1268,10 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
+}
+
+.attempt-meta.failed {
+  color: var(--accent-red-fg);
 }
 
 .attempt-body {
@@ -1479,6 +1494,22 @@ body {
   text-align: left;
   padding: 0 10px 6px;
   cursor: pointer;
+}
+
+.resume-copy.failed {
+  color: var(--accent-red-fg);
+}
+
+/* Shown only when the clipboard refused. The command still has to be reachable,
+   and a title tooltip is mouse-only. */
+.resume-fallback {
+  display: block;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 0 10px 6px;
+  user-select: all;
+  word-break: break-all;
 }
 
 .sessions-subhead {
