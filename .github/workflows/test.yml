@@ -1,0 +1,71 @@
+name: Test
+
+# The build workflow proves the app bundles; it does not run a single test. Until
+# this existed, all three suites could go red and main would still look green —
+# and a release build could break while every local suite passed, which is how a
+# Tauri version mismatch reached main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  app:
+    name: App (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - name: Type-check
+        run: npx tsc --noEmit
+        working-directory: app
+      - run: npm test
+        working-directory: app
+
+  channel-server:
+    name: Channel server (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: channel-server/package-lock.json
+      - run: npm ci
+        working-directory: channel-server
+      - name: Build (tsc is the type-check)
+        run: npm run build
+        working-directory: channel-server
+      - run: npm test
+        working-directory: channel-server
+
+  rust:
+    name: Rust (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      # Tauri links against the system webkit even for `cargo test`, so the lib
+      # will not compile without these.
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      # No frontend build needed: `cargo test --lib` compiles and passes with
+      # ../dist absent (checked by deleting it and forcing a recompile), so the
+      # npm install this would otherwise need is pure cost.
+      - run: cargo test --lib
+        working-directory: app/src-tauri
