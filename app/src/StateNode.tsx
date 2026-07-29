@@ -2,8 +2,13 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { StateNodeData } from "./types";
 
-function StateNode({ data, selected }: NodeProps & { data: StateNodeData & { runStatus?: string } }) {
-  const { state, runStatus } = data;
+function StateNode({
+  data,
+  selected,
+}: NodeProps & {
+  data: StateNodeData & { runStatus?: string; visits?: number; filtered?: boolean };
+}) {
+  const { state, runStatus, visits = 0, filtered } = data;
   const hasSubagent = state.subagent;
   const hasSubflow = !!state.subflow;
   const actionCount = state.actions?.length ?? 0;
@@ -12,7 +17,7 @@ function StateNode({ data, selected }: NodeProps & { data: StateNodeData & { run
 
   return (
     <div
-      className={`state-node ${selected ? "selected" : ""} ${hasSubagent ? "subagent" : ""} ${statusClass}`}
+      className={`state-node ${selected ? "selected" : ""} ${hasSubagent ? "subagent" : ""} ${statusClass} ${filtered ? "filtered" : ""}`}
     >
       <Handle type="target" position={Position.Left} />
 
@@ -20,6 +25,14 @@ function StateNode({ data, selected }: NodeProps & { data: StateNodeData & { run
         <span className="state-node-name">{state.name}</span>
         <div className="state-node-badges">
           {hasSubagent && <span className="state-node-badge subagent-badge">subagent</span>}
+          {/* Only from the second visit on: a linear workflow should carry no
+              extra noise, but a loop that has been round several times is
+              exactly what the user needs to see at a glance. */}
+          {visits > 1 && (
+            <span className="state-node-badge visits-badge" title={`Visited ${visits} times`}>
+              ×{visits}
+            </span>
+          )}
           {runStatus === "done" && <span className="state-node-badge done-badge">done</span>}
           {runStatus === "active" && <span className="state-node-badge active-badge">running</span>}
         </div>

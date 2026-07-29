@@ -140,3 +140,56 @@ describe("SSE delivery", () => {
     expect(second[0]).toBeGreaterThan(first[0]);
   });
 });
+
+describe("activity does not crowd out control events", () => {
+  const activity = (n: number) =>
+    broadcastSSE({
+      type: "activity",
+      data: { attemptId: "a1", stateId: "s", kind: "assistant_text", text: `chatter ${n}` },
+    });
+
+  // The reason the buffer is split in two. A busy state emits tool calls and
+  // streamed text by the hundred; if they shared one bounded buffer with control
+  // events, this burst would evict the buffered action_complete and the run would
+  // wait forever for a completion that was silently dropped.
+  it("keeps a buffered action_complete after an activity flood", async () => {
+    broadcastSSE({
+      type: "action_complete",
+      data: { sessionId: "s1", stateId: "probe", results: "the result that must survive" },
+    });
+
+    // Comfortably more than the activity buffer holds.
+    for (let i = 0; i < 900; i++) activity(i);
+
+    const text = await readStream();
+
+    expect(text).toContain("the result that must survive");
+  });
+
+  // The activity buffer is allowed to lose its own oldest entries — that costs
+  // detail, not correctness — but it must stay bounded rather than growing without
+  // limit on a long run.
+  it("drops its own oldest entries once the activity buffer is full", async () => {
+    for (let i = 0; i < 900; i++) activity(i);
+
+    const text = await readStream();
+
+    expect(text).not.toContain("chatter 0");
+    expect(text).toContain("chatter 899");
+  });
+
+  // Both buffers draw ids from one counter, so a merged replay has to come back
+  // in the order the events were emitted or a client's Last-Event-ID bookkeeping
+  // breaks.
+  it("replays the two buffers merged into one ascending id sequence", async () => {
+    broadcastSSE({ type: "action_complete", data: { sessionId: "s", stateId: "a", results: "r1" } });
+    activity(1);
+    broadcastSSE({ type: "action_complete", data: { sessionId: "s", stateId: "b", results: "r2" } });
+    activity(2);
+
+    const ids = seqIds(await readStream());
+
+    expect(ids).toHaveLength(4);
+    expect([...ids].sort((x, y) => x - y)).toEqual(ids);
+  });
+});

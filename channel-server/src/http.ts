@@ -1,15 +1,27 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { SessionInfo, ExecuteStatePayload, PickTransitionPayload, SSEEvent } from "./types.js";
+import type {
+  SessionInfo,
+  ExecuteStatePayload,
+  PickTransitionPayload,
+  ChatTurnPayload,
+  SSEEvent,
+} from "./types.js";
+import { isCriticalEvent } from "./types.js";
 import { updateSessionFile } from "./session.js";
 
 type ExecuteHandler = (payload: ExecuteStatePayload) => Promise<void>;
 type TransitionHandler = (payload: PickTransitionPayload) => Promise<void>;
+type ChatHandler = (payload: ChatTurnPayload) => Promise<void>;
 type RegisterHandler = (workflowId: string, workflowName: string) => void;
 
 interface HttpServerOptions {
   onExecute: ExecuteHandler;
   onTransition: TransitionHandler;
+  /** Absent on the channel backend, which owns no session to chat into. */
+  onChat?: ChatHandler;
+  /** Absent when the backend cannot end a turn without killing the session. */
+  onInterrupt?: () => Promise<void>;
   onRegister?: RegisterHandler;
   readonly sessionInfo: SessionInfo;
 }
@@ -28,8 +40,19 @@ const sseClients: Set<ServerResponse> = new Set();
 // Replaying to every client means a reconnecting client sees events it already
 // handled. That is safe because the app ignores events from other runs and only
 // settles a waiter for the state it is actually waiting on, so duplicates no-op.
-const MAX_PENDING = 200;
-let pending: { seq: number; data: string }[] = [];
+//
+// TWO buffers, not one, and this is load-bearing. Activity events (tool calls,
+// streamed assistant text) outnumber control events by orders of magnitude
+// during a busy state. Sharing one bounded buffer would let a burst of activity
+// evict a buffered `action_complete` before the client attaches, and the run
+// would then wait forever for a completion that was silently dropped. Keeping
+// them apart makes that impossible by construction: activity can only ever evict
+// activity.
+const MAX_PENDING_CRITICAL = 200;
+const MAX_PENDING_ACTIVITY = 600;
+type Buffered = { seq: number; data: string };
+let pendingCritical: Buffered[] = [];
+let pendingActivity: Buffered[] = [];
 
 // Monotonic across the server's life, never reset. Emitted as the SSE `id:`
 // field, which EventSource echoes back as Last-Event-ID when it auto-reconnects,
@@ -47,7 +70,8 @@ let currentRunId = "";
 
 export function setRunId(runId: string): void {
   currentRunId = runId;
-  pending = [];
+  pendingCritical = [];
+  pendingActivity = [];
 }
 
 export function broadcastSSE(event: SSEEvent): void {
@@ -55,8 +79,13 @@ export function broadcastSSE(event: SSEEvent): void {
   const id = ++seq;
   const frame = `id: ${id}\ndata: ${data}\n\n`;
 
-  pending.push({ seq: id, data });
-  if (pending.length > MAX_PENDING) pending.shift();
+  if (isCriticalEvent(event)) {
+    pendingCritical.push({ seq: id, data });
+    if (pendingCritical.length > MAX_PENDING_CRITICAL) pendingCritical.shift();
+  } else {
+    pendingActivity.push({ seq: id, data });
+    if (pendingActivity.length > MAX_PENDING_ACTIVITY) pendingActivity.shift();
+  }
 
   for (const client of sseClients) {
     // A socket can die between the TCP close and its "close" event, so writing
@@ -131,10 +160,15 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
           // connect race.
           const lastSeen = Number(req.headers["last-event-id"]);
           const after = Number.isFinite(lastSeen) ? lastSeen : 0;
-          for (const entry of pending) {
-            if (entry.seq > after) {
-              res.write(`id: ${entry.seq}\ndata: ${entry.data}\n\n`);
-            }
+          // Merge the two buffers back into one ordered stream. Ids are minted
+          // from a single counter, so sorting by seq restores the original order
+          // across both; gaps from evicted activity are fine, since a client
+          // only ever compares ids against the last one it saw.
+          const replay = [...pendingCritical, ...pendingActivity]
+            .filter((entry) => entry.seq > after)
+            .sort((a, b) => a.seq - b.seq);
+          for (const entry of replay) {
+            res.write(`id: ${entry.seq}\ndata: ${entry.data}\n\n`);
           }
           sseClients.add(res);
           req.on("close", () => sseClients.delete(res));
@@ -158,6 +192,33 @@ export function startHttpServer(options: HttpServerOptions): Promise<number> {
           const body = await readBody(req);
           const payload: PickTransitionPayload = JSON.parse(body);
           await onTransition(payload);
+          json(res, 200, { ok: true });
+          return;
+        }
+
+        // POST /chat — deliver a user message into the session's Claude
+        if (req.method === "POST" && url === "/chat") {
+          if (!options.onChat) {
+            json(res, 501, { error: "This session's backend does not support chat" });
+            return;
+          }
+          const body = await readBody(req);
+          const payload: ChatTurnPayload = JSON.parse(body);
+          // Fire-and-ack like /execute: a chat turn takes as long as any other
+          // turn, and holding the request open for it would exceed the WebView's
+          // fetch timeout. The reply arrives as activity + chat_complete events.
+          await options.onChat(payload);
+          json(res, 200, { ok: true, attemptId: payload.attemptId });
+          return;
+        }
+
+        // POST /interrupt — end the current turn, keep the session usable
+        if (req.method === "POST" && url === "/interrupt") {
+          if (!options.onInterrupt) {
+            json(res, 501, { error: "This session's backend does not support interrupt" });
+            return;
+          }
+          await options.onInterrupt();
           json(res, 200, { ok: true });
           return;
         }

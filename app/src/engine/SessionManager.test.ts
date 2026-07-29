@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { pickSession, type SessionInfo } from "./SessionManager";
+import { pickSession, sessionsForProject, type SessionInfo } from "./SessionManager";
 
-function session(id: string, startedAt: string): SessionInfo {
+function session(id: string, startedAt: string, cwd?: string): SessionInfo {
   return {
     sessionId: id,
     port: 1234,
@@ -9,6 +9,7 @@ function session(id: string, startedAt: string): SessionInfo {
     workflowName: "WF",
     pid: 1,
     startedAt,
+    ...(cwd ? { cwd } : {}),
   };
 }
 
@@ -51,5 +52,41 @@ describe("pickSession", () => {
   it("still returns a session when timestamps are unparseable", () => {
     const bad = session("bad", "not-a-date");
     expect(pickSession([bad], null)).toBe(bad);
+  });
+});
+
+describe("scoping sessions to the open project", () => {
+  const repo = "/Users/george/agent-flow";
+  const scratch = "/private/tmp/scratchpad";
+
+  const inRepo = session("in-repo", "2026-07-26T01:00:00.000Z", repo);
+  const inScratch = session("in-scratch", "2026-07-26T02:00:00.000Z", scratch);
+  const unknownCwd = session("legacy", "2026-07-26T03:00:00.000Z");
+
+  it("keeps only sessions whose working directory is the project", () => {
+    expect(sessionsForProject([inRepo, inScratch], repo)).toEqual([inRepo]);
+  });
+
+  // A session written before `cwd` existed cannot be shown to the user as a
+  // consent surface, so it is excluded rather than assumed to match.
+  it("excludes sessions with no recorded working directory", () => {
+    expect(sessionsForProject([unknownCwd], repo)).toEqual([]);
+  });
+
+  /**
+   * The safety case. The newest session on this machine was a scratchpad one,
+   * so an unfiltered fallback would hand an edit-capable Claude a folder the
+   * user never chose — while the launch UI named the repo.
+   */
+  it("never falls back to a session belonging to another folder", () => {
+    expect(pickSession([inRepo, inScratch], null, repo)).toBe(inRepo);
+  });
+
+  it("refuses a selected session that belongs to another folder", () => {
+    expect(pickSession([inRepo, inScratch], "in-scratch", repo)).toBe(inRepo);
+  });
+
+  it("returns nothing rather than guessing when the project has no session", () => {
+    expect(pickSession([inScratch], null, repo)).toBeUndefined();
   });
 });

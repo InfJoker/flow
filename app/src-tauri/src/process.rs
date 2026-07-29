@@ -116,6 +116,11 @@ pub fn launch_claude(
 
 #[tauri::command]
 pub fn kill_session(pid: u32) -> Result<(), String> {
+    // Drop it from the exit-time reap list first. Once we have signalled it the
+    // pid may be recycled by the OS, and reaping a recycled pid on quit would
+    // kill an unrelated process.
+    crate::launcher::forget_spawned(pid);
+
     #[cfg(unix)]
     {
         unsafe {
@@ -133,12 +138,12 @@ pub fn kill_session(pid: u32) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
+pub fn is_process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 #[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
+pub fn is_process_alive(_pid: u32) -> bool {
     false
 }
 

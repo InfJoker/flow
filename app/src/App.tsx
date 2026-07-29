@@ -27,6 +27,8 @@ import { useSkills } from "./hooks/useSkills";
 import { useAgents } from "./hooks/useAgents";
 import { useWorkflowPersistence } from "./hooks/useWorkflowPersistence";
 import { useExecution } from "./hooks/useExecution";
+import { useProject } from "./hooks/useProject";
+import { useClaudeSessions } from "./hooks/useClaudeSessions";
 import { useUpdater } from "./hooks/useUpdater";
 import type { Workflow, WorkflowState, Transition, StateNodeData } from "./types";
 
@@ -57,7 +59,11 @@ function AppInner() {
   const [editingName, setEditingName] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showProjects, setShowProjects] = useState(false);
+  // Which state the activity panel is narrowed to, if any.
+  const [filterStateId, setFilterStateId] = useState<string | null>(null);
   const updater = useUpdater();
+  const project = useProject();
 
   const initialEdges = useMemo(
     () => transitionsToEdges(workflow.transitions),
@@ -77,13 +83,21 @@ function AppInner() {
     executionState,
     sessions,
     activeSessionId,
+    capabilities,
+    chatReady,
+    claudeSessionId,
+    launchState,
+    dismissLaunchError,
     refreshSessions,
     startExecution,
-    connectToSession,
+    attachToSession,
+    sendChat,
+    interrupt,
     pause,
     resume,
     stop,
-  } = useExecution();
+  } = useExecution(project.activePath);
+  const { claudeSessions, refreshClaudeSessions } = useClaudeSessions(project.activePath);
   const { workflowList, load, save, remove, isTauri } = useWorkflowPersistence(
     workflow,
     useCallback((loaded: Workflow) => {
@@ -113,13 +127,16 @@ function AppInner() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setSelectedStateId(null);
-      }
+      if (e.key !== "Escape") return;
+      // Innermost surface first: Escape should dismiss whatever is layered on
+      // top before it touches the canvas selection underneath.
+      if (showProjects) setShowProjects(false);
+      else if (showLibrary) setShowLibrary(false);
+      else setSelectedStateId(null);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [showProjects, showLibrary]);
 
   const onConnect: OnConnect = useCallback(
     (connection) => {
@@ -251,6 +268,62 @@ function AppInner() {
       <div className="top-bar">
         <div className="top-bar-left">
           <span className="app-logo">Agent Flow</span>
+
+          {/* The folder a run reads and writes. Shown permanently rather than
+              buried in settings: a run's Claude edits files and executes shell
+              commands in here, so which folder it is must never be a guess. */}
+          {isTauri && (
+            <div className="project-chip-container">
+              <button
+                className={`project-chip ${project.activePath ? "" : "unset"}`}
+                onClick={() => setShowProjects((v) => !v)}
+                title={project.activePath ?? "No project folder open"}
+                aria-expanded={showProjects}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path
+                    d="M1 3.5A1.5 1.5 0 012.5 2h2l1 1.5h3A1.5 1.5 0 0110 5v4a1.5 1.5 0 01-1.5 1.5h-6A1.5 1.5 0 011 9V3.5z"
+                    stroke="currentColor"
+                    strokeWidth="1.1"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                {project.active?.name ?? "Open folder…"}
+                <span className="dropdown-arrow">&#9662;</span>
+              </button>
+
+              {showProjects && (
+                <div className="project-menu">
+                  <button
+                    className="wl-new"
+                    onClick={async () => {
+                      if (await project.chooseFolder()) setShowProjects(false);
+                    }}
+                  >
+                    Open folder…
+                  </button>
+                  {project.recent.length > 0 && <div className="workflow-library-divider" />}
+                  {project.recent.map((p) => (
+                    <button
+                      key={p.path}
+                      className={`project-menu-item ${p.path === project.activePath ? "active" : ""}`}
+                      onClick={async () => {
+                        await project.openPath(p.path);
+                        setShowProjects(false);
+                      }}
+                    >
+                      <span className="wl-name">{p.name}</span>
+                      {/* Not .wl-desc: that is --text-muted, ~2.4:1 on this
+                          background. The path is how you tell two folders with
+                          the same basename apart, so it has to be readable. */}
+                      <span className="project-menu-path">{p.path}</span>
+                    </button>
+                  ))}
+                  {project.error && <p className="project-menu-error">{project.error}</p>}
+                </div>
+              )}
+            </div>
+          )}
           <div className="workflow-name-container">
             {editingName ? (
               <input
@@ -403,20 +476,43 @@ function AppInner() {
               <button className="top-btn" onClick={pause}>Pause</button>
               <button className="top-btn danger" onClick={stop}>Stop</button>
             </>
+          ) : executionState.status === "paused" ? (
+            <>
+              <button className="top-btn primary" onClick={resume}>Resume</button>
+              <button className="top-btn danger" onClick={stop}>Stop</button>
+            </>
           ) : (
             <button
               className="top-btn primary"
-              onClick={() => {
+              disabled={launchState.kind === "starting"}
+              onClick={async () => {
                 setView("run");
-                startExecution(workflow, selectedStateId ?? undefined);
+                setFilterStateId(null);
+                await startExecution(workflow, selectedStateId ?? undefined);
+                // A run creates a Claude Code session, so the interop list is
+                // stale the moment it starts.
+                void refreshClaudeSessions();
               }}
               title={
-                selectedState
-                  ? `Run starting from "${selectedState.name}"`
-                  : "Run from the beginning"
+                project.activePath
+                  ? selectedState
+                    ? `Run in ${project.activePath}, starting from "${selectedState.name}"`
+                    : `Run in ${project.activePath}`
+                  : "Open a project folder first"
               }
             >
-              {selectedState ? `Run from "${selectedState.name}"` : "Run"}
+              {/* The folder is named on the button itself, not only in the
+                  tooltip. A run edits files and executes shell commands there
+                  under acceptEdits, and a tooltip is mouse-only and easy to miss
+                  — two checkouts sharing a basename are indistinguishable
+                  without it. */}
+              {launchState.kind === "starting"
+                ? "Starting…"
+                : !project.activePath
+                  ? "Run"
+                  : selectedState
+                    ? `Run "${selectedState.name}" in ${project.active?.name ?? "project"}`
+                    : `Run in ${project.active?.name ?? "project"}`}
             </button>
           )}
           {isTauri && updater.bannerVisible && updater.status.kind === "available" && (
@@ -546,12 +642,39 @@ function AppInner() {
             edges={edges}
             executionState={executionState}
             sessions={sessions}
+            claudeSessions={claudeSessions}
             activeSessionId={activeSessionId}
-            onSelectSession={(session) => connectToSession(session, workflow)}
-            onRefreshSessions={refreshSessions}
+            capabilities={capabilities}
+            canChat={chatReady}
+            claudeSessionId={claudeSessionId}
+            projectPath={project.activePath}
+            filterStateId={filterStateId}
+            onFilterState={setFilterStateId}
+            /* Attaching, not registering: registering would mint a new run id
+               and clear the server's buffer, destroying the transcript of a run
+               already in flight and orphaning whoever was watching it. */
+            onSelectSession={attachToSession}
+            onRefreshSessions={() => {
+              void refreshSessions();
+              void refreshClaudeSessions();
+            }}
+            onSendChat={sendChat}
+            onInterrupt={interrupt}
           />
         )}
       </div>
+
+      {launchState.kind === "failed" && (
+        <div className="launch-error" role="alert">
+          <div className="launch-error-body">
+            <strong>Could not start the run</strong>
+            <p>{launchState.message}</p>
+          </div>
+          <button className="top-btn" onClick={dismissLaunchError}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {showSettings && (
         <SettingsModal updater={updater} onClose={() => setShowSettings(false)} />

@@ -3,10 +3,16 @@ import { createChannelServer, sendExecuteState, sendPickTransition } from "./ser
 import { startHttpServer, broadcastSSE } from "./http.js";
 import { SdkBackend } from "./sdk-backend.js";
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
-import { writeSessionFile, cleanupSessionFile } from "./session.js";
-import type { ExecuteStatePayload, PickTransitionPayload } from "./types.js";
+import { writeSessionFile, updateSessionFile, cleanupSessionFile } from "./session.js";
+import type {
+  ChatTurnPayload,
+  ExecuteStatePayload,
+  PickTransitionPayload,
+  SessionInfo,
+  SessionMetaData,
+} from "./types.js";
 
-let sessionInfo = {
+let sessionInfo: SessionInfo = {
   sessionId: "",
   port: 0,
   workflowId: "",
@@ -33,13 +39,35 @@ async function main() {
   // nothing else pins it down, so it is reported to the app either way.
   const cwd = process.env.AGENT_FLOW_CWD ?? process.cwd();
 
+  // What this session supports, so the app degrades honestly rather than showing
+  // an empty activity panel that looks broken. The channel backend learns nothing
+  // until Claude calls report_action_complete, and owns no session to chat into.
+  const sessionMeta = (): SessionMetaData => ({
+    ...(sessionInfo.claudeSessionId ? { claudeSessionId: sessionInfo.claudeSessionId } : {}),
+    backend: backendKind,
+    cwd,
+    capabilities: {
+      activity: backendKind === "sdk",
+      chat: backendKind === "sdk",
+      interrupt: backendKind === "sdk",
+    },
+  });
+
   const sdk =
     backendKind === "sdk"
       ? new SdkBackend(
           broadcastSSE,
           cwd,
           process.env.AGENT_FLOW_MODEL,
-          process.env.AGENT_FLOW_PERMISSION_MODE as PermissionMode | undefined
+          process.env.AGENT_FLOW_PERMISSION_MODE as PermissionMode | undefined,
+          // Claude's session id is only knowable once its first turn reports it.
+          // Persist it so the app can offer `claude --resume <id>`, and announce
+          // it so an already-connected app updates without re-reading the file.
+          (claudeSessionId) => {
+            sessionInfo = { ...sessionInfo, claudeSessionId };
+            updateSessionFile(sessionInfo);
+            broadcastSSE({ type: "session_meta", data: sessionMeta() });
+          }
         )
       : undefined;
 
@@ -58,6 +86,31 @@ async function main() {
     onTransition: async (payload: PickTransitionPayload) => {
       if (sdk) void sdk.transition(payload);
       else await sendPickTransition(server, payload);
+    },
+    // Both are SDK-only. Left undefined on the channel backend so the endpoints
+    // answer 501 and the app can tell the difference between "not supported" and
+    // "broken".
+    ...(sdk
+      ? {
+          onChat: async (payload: ChatTurnPayload) => {
+            void sdk.chat(payload);
+          },
+          onInterrupt: async () => {
+            void sdk.interrupt();
+          },
+        }
+      : {}),
+    onRegister: () => {
+      // Anything still running belongs to the run that just ended. Events are
+      // stamped with the run id current when they are emitted, so letting an old
+      // turn finish would relabel its completion as this run's and settle a
+      // waiter for work this run never asked for.
+      sdk?.abandonRun();
+      // A newly registered run needs the session's capabilities and, if the
+      // session has already had a turn, the Claude session id. Registration
+      // clears the event buffer, so this must be re-sent rather than relied on
+      // from the previous run.
+      broadcastSSE({ type: "session_meta", data: sessionMeta() });
     },
   });
 
